@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tab + Mic Recorder</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      overflow: hidden;
+    }
+
+    body {
+      width: 380px;
+      max-height: 600px;
+      margin: 0;
+      padding: 16px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: #1a1a1a;
+      background: #fafafa;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      font-size: 13px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: #9e9e9e;
+    }
+
+    .status[data-state="recording"] .status-dot {
+      background: #e53935;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .status[data-state="saving"] .status-dot,
+    .status[data-state="syncing"] .status-dot,
+    .status[data-state="uploading"] .status-dot,
+    .status[data-state="generating"] .status-dot {
+      background: #fb8c00;
+    }
+
+    .status[data-state="idle"] .status-dot,
+    .status[data-state="notes"] .status-dot,
+    .status[data-state="saved"] .status-dot {
+      background: #43a047;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .auto-detect-hint {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #5f6368;
+    }
+
+    .auth-panel,
+    .quota-panel {
+      margin-bottom: 12px;
+      padding: 12px;
+      border-radius: 8px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+    }
+
+    .auth-panel h2,
+    .quota-panel h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .auth-panel label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #424242;
+    }
+
+    .auth-panel input {
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .auth-user-email {
+      margin: 0 0 4px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .usage-hint {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: #5f6368;
+      line-height: 1.45;
+    }
+
+    .auth-actions,
+    .quota-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #loginBtn,
+    #subscribeBtn {
+      background: #377dec;
+      color: #fff;
+    }
+
+    #loginBtn:hover:not(:disabled),
+    #subscribeBtn:hover:not(:disabled) {
+      background: #2f6ad0;
+    }
+
+    #logoutBtn,
+    #signupLinkBtn {
+      background: #fff;
+      color: #424242;
+      border: 1px solid #e0e0e0;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .quota-panel {
+      border-color: #f9ab00;
+      background: #fff8e1;
+    }
+
+    .quota-panel p {
+      margin: 0 0 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #5f6368;
+    }
+
+    button {
+      padding: 10px 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #startBtn,
+    #saveNotesBtn,
+    #startNewRecordingBtn {
+      background: #1a73e8;
+      color: #fff;
+    }
+
+    #startBtn:hover:not(:disabled),
+    #saveNotesBtn:hover:not(:disabled),
+    #startNewRecordingBtn:hover:not(:disabled) {
+      background: #1557b0;
+    }
+
+    #stopBtn {
+      background: #fff;
+      color: #c62828;
+      border: 1px solid #ef9a9a;
+    }
+
+    #stopBtn:hover:not(:disabled) {
+      background: #ffebee;
+    }
+
+    #downloadAudioBtn,
+    #downloadTextBtn,
+    #dismissSessionBtn {
+      background: #fff;
+      color: #424242;
+      border: 1px solid #e0e0e0;
+    }
+
+    #downloadAudioBtn:hover:not(:disabled),
+    #downloadTextBtn:hover:not(:disabled),
+    #dismissSessionBtn:hover:not(:disabled) {
+      background: #f5f5f5;
+    }
+
+    .error {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #ffebee;
+      color: #b71c1c;
+      font-size: 12px;
+      line-height: 1.4;
+      display: none;
+    }
+
+    .error.visible {
+      display: block;
+    }
+
+    .hint {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #757575;
+      line-height: 1.4;
+    }
+
+    .session-panel {
+      display: none;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #e0e0e0;
+    }
+
+    .session-panel.visible {
+      display: block;
+    }
+
+    .session-panel h2 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .session-panel label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #424242;
+    }
+
+    .notes-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .notes-label-row label {
+      margin-bottom: 0;
+    }
+
+    .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      background: #fff;
+      color: #424242;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .copy-btn:hover {
+      background: #f5f5f5;
+    }
+
+    .copy-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .session-panel textarea {
+      display: block;
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow: hidden;
+      resize: none;
+      field-sizing: content;
+      min-height: 2.5rem;
+      background: #fff;
+    }
+
+    #notesContent {
+      min-height: 8rem;
+    }
+
+    .notes-display {
+      display: block;
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.5;
+      background: #fff;
+      overflow: visible;
+    }
+
+    .notes-display.readonly {
+      background: #f9f9f9;
+      cursor: default;
+      user-select: text;
+    }
+
+    .notes-display .note-heading {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1a1a1a;
+      margin: 14px 0 6px;
+    }
+
+    .notes-display .note-heading:first-child {
+      margin-top: 0;
+    }
+
+    .notes-display .note-paragraph {
+      margin: 0 0 8px;
+      color: #333;
+    }
+
+    .notes-display .note-paragraph:last-child {
+      margin-bottom: 0;
+    }
+
+    .notes-summary {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: #616161;
+      line-height: 1.5;
+    }
+
+    .session-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .save-status {
+      min-height: 16px;
+      font-size: 11px;
+      color: #2e7d32;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <h1>Tab + Mic Recorder</h1>
+
+  <div id="status" class="status" data-state="idle">
+    <span class="status-dot" aria-hidden="true"></span>
+    <span id="statusText">Idle</span>
+  </div>
+
+  <section id="authPanel" class="auth-panel">
+    <div id="authLoginForm">
+      <h2>Sign in to md telescribe</h2>
+      <label for="loginEmail">Email</label>
+      <input id="loginEmail" type="email" autocomplete="email" placeholder="you@clinic.com" />
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Your password" />
+      <div class="auth-actions">
+        <button id="loginBtn" type="button">Sign in</button>
+        <button id="signupLinkBtn" type="button">Create account</button>
+      </div>
+    </div>
+
+    <div id="authUserBar" class="hidden">
+      <p id="authUserEmail" class="auth-user-email"></p>
+      <p id="usageHint" class="usage-hint"></p>
+      <div class="auth-actions">
+        <button id="logoutBtn" type="button">Sign out</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="quotaBlockedPanel" class="quota-panel hidden">
+    <h2>Free notes used</h2>
+    <p>
+      You have used your 2 free note generations. Subscribe on the website to keep generating
+      telemedicine encounter notes.
+    </p>
+    <div class="quota-actions">
+      <button id="subscribeBtn" type="button">View subscription plans</button>
+    </div>
+  </section>
+
+  <div id="recordingSection">
+  <p id="autoDetectHint" class="auto-detect-hint">
+    Visit type is detected automatically from your telemedicine tab (audio-only vs camera).
+  </p>
+
+  <div id="recordingButtons" class="buttons">
+    <button id="startBtn" type="button">Start Recording</button>
+    <button id="stopBtn" type="button" disabled>Stop Recording</button>
+  </div>
+  </div>
+
+  <div id="error" class="error" role="alert"></div>
+
+  <section id="sessionPanel" class="session-panel" aria-live="polite">
+    <h2 id="notesTitle">Telemedicine Encounter Note</h2>
+    <p id="notesSummary" class="notes-summary"></p>
+    <div class="notes-label-row">
+      <label for="notesContent">Clinical notes</label>
+      <button id="copyNotesBtn" type="button" class="copy-btn hidden" title="Copy notes" aria-label="Copy notes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+      </button>
+    </div>
+    <textarea id="notesContent" placeholder="Generated SOAP notes will appear here…"></textarea>
+    <div id="notesDisplay" class="notes-display hidden" aria-readonly="true"></div>
+    <div class="session-actions">
+      <button id="saveNotesBtn" type="button">Save Notes</button>
+      <button id="downloadAudioBtn" type="button">Download Audio</button>
+      <button id="downloadTextBtn" type="button">Download Transcript</button>
+      <button id="startNewRecordingBtn" type="button" class="hidden">Start New Recording</button>
+      <button id="dismissSessionBtn" type="button">Dismiss</button>
+    </div>
+    <p id="saveStatus" class="save-status"></p>
+  </section>
+
+  <p class="hint">
+    Built for <strong>2-person</strong> calls. Stop recording to save audio and generate clinical notes on the server.
+  </p>
+
+  <script src="config.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Offscreen Recorder</title>
+</head>
+<body>
+  <!--
+    This page is never shown to the user. Chrome MV3 requires a DOM context for:
+    - navigator.mediaDevices.getUserMedia (mic + tab stream redemption)
+    - AudioContext / Web Audio API mixing graph
+    - MediaRecorder
+
+    See offscreen.js for the full audio pipeline.
+  -->
+  <script type="module" src="offscreen.js"></script>
+</body>
+</html>

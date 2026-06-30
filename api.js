@@ -252,9 +252,22 @@ function isTransientNetworkError(err) {
 }
 
 /**
+ * @param {object | null | undefined} meeting
+ * @param {{ content?: string }} note
+ * @returns {{ note: typeof note, visitModality: 'AUDIO' | 'VIDEO' }}
+ */
+function wrapMeetingNoteResult(meeting, note) {
+  return {
+    note,
+    visitModality: meeting?.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO',
+  };
+}
+
+/**
  * Poll GET /meetings/:id until a note with content exists.
  * @param {string} meetingId
  * @param {{ timeoutMs?: number, intervalMs?: number }} [options]
+ * @returns {Promise<{ note: object, visitModality: 'AUDIO' | 'VIDEO' }>}
  */
 async function pollMeetingNote(meetingId, options = {}) {
   const timeoutMs = options.timeoutMs ?? 180_000;
@@ -264,7 +277,7 @@ async function pollMeetingNote(meetingId, options = {}) {
   while (Date.now() < deadline) {
     const meeting = await getMeeting(meetingId);
     if (meeting?.note?.content?.trim()) {
-      return meeting.note;
+      return wrapMeetingNoteResult(meeting, meeting.note);
     }
 
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -280,6 +293,7 @@ async function pollMeetingNote(meetingId, options = {}) {
  * Polling survives dropped long-running connections (common in MV3 service workers).
  * @param {string} meetingId
  * @param {'AUDIO' | 'VIDEO'} [visitModality]
+ * @returns {Promise<{ note: object, visitModality: 'AUDIO' | 'VIDEO' }>}
  */
 async function generateMeetingNotes(meetingId, visitModality) {
   const deadline = Date.now() + 180_000;
@@ -305,7 +319,12 @@ async function generateMeetingNotes(meetingId, visitModality) {
 
   while (Date.now() < deadline) {
     if (generateResult?.content?.trim()) {
-      return generateResult;
+      try {
+        const meeting = await getMeeting(meetingId);
+        return wrapMeetingNoteResult(meeting, generateResult);
+      } catch {
+        return wrapMeetingNoteResult(null, generateResult);
+      }
     }
 
     if (generateSettled && generateError && !isTransientNetworkError(generateError)) {
@@ -315,7 +334,7 @@ async function generateMeetingNotes(meetingId, visitModality) {
     try {
       const meeting = await getMeeting(meetingId);
       if (meeting?.note?.content?.trim()) {
-        return meeting.note;
+        return wrapMeetingNoteResult(meeting, meeting.note);
       }
     } catch (err) {
       if (!isTransientNetworkError(err)) {

@@ -300,7 +300,9 @@ async function runProcessStoppedRecording(payload) {
     await setProcessingStage('generating');
     notifyPopup('sync-status', { stage: 'generating' });
 
-    note = await generateMeetingNotes(meetingId, visitModality);
+    const generated = await generateMeetingNotes(meetingId, visitModality);
+    note = generated.note;
+    visitModality = generated.visitModality ?? visitModality;
     await finishNotesSession(meetingId, note, visitModality, payload.filename);
   } catch (err) {
     const backendError = err instanceof Error ? err.message : String(err);
@@ -309,7 +311,9 @@ async function runProcessStoppedRecording(payload) {
 
     if (meetingId && !note) {
       try {
-        note = await pollMeetingNote(meetingId, { timeoutMs: 45_000, intervalMs: 2000 });
+        const recovered = await pollMeetingNote(meetingId, { timeoutMs: 45_000, intervalMs: 2000 });
+        note = recovered.note;
+        visitModality = recovered.visitModality ?? visitModality;
         await finishNotesSession(meetingId, note, visitModality, payload.filename);
         return;
       } catch (recoverErr) {
@@ -350,14 +354,14 @@ async function recoverInterruptedProcessing() {
 
   if (pendingSession.meetingId) {
     try {
-      const note = await pollMeetingNote(pendingSession.meetingId, {
+      const recovered = await pollMeetingNote(pendingSession.meetingId, {
         timeoutMs: 60_000,
         intervalMs: 2000,
       });
       await finishNotesSession(
         pendingSession.meetingId,
-        note,
-        pendingSession.visitModality,
+        recovered.note,
+        recovered.visitModality ?? pendingSession.visitModality,
         pendingSession.files?.audioFilename || 'recording.webm',
       );
       return;
@@ -659,7 +663,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
 
         try {
-          const note = await pollMeetingNote(meetingId, {
+          const recovered = await pollMeetingNote(meetingId, {
             timeoutMs: message.data?.timeoutMs ?? 20_000,
             intervalMs: 2000,
           });
@@ -667,7 +671,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const session = {
             ...(stored.pendingSession || {}),
             meetingId,
-            note,
+            note: recovered.note,
+            visitModality: recovered.visitModality ?? stored.pendingSession?.visitModality,
             notesSaved: false,
             processingNotes: false,
             files: stored.pendingSession?.files ?? buildSessionFilesMeta(),
@@ -679,7 +684,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             syncError: null,
           });
           notifyPopup('notes-ready', session);
-          return { ok: true, note };
+          return { ok: true, note: recovered.note, visitModality: recovered.visitModality };
         } catch (err) {
           return {
             ok: false,

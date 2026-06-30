@@ -1,45 +1,52 @@
-import { execSync } from "node:child_process"
-import { copyFileSync, mkdirSync, unlinkSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { basename, dirname, join } from "node:path"
+import { createWriteStream } from "node:fs"
+import { mkdirSync, statSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import archiver from "archiver"
 
 const extensionDir = join(dirname(fileURLToPath(import.meta.url)), "..")
-const folderName = basename(extensionDir)
+const folderName = "md-telescribe-extension"
 const outputDir = join(extensionDir, "dist")
 const outputZip = join(outputDir, "md-telescribe-extension.zip")
-const tempZip = join(tmpdir(), `md-telescribe-extension-${Date.now()}.zip`)
-
-const excludes = [
-  "node_modules",
-  "dist",
-  "package.json",
-  "package-lock.json",
-  "README.md",
-  ".git",
-  ".gitignore",
-  "config.example.js",
-  "scripts",
-]
-
-const excludeFlags = excludes
-  .map((entry) => `--exclude=${folderName}/${entry}`)
-  .join(" ")
 
 mkdirSync(outputDir, { recursive: true })
 
-execSync(
-  `tar -a -c -f "${tempZip}" -C "${dirname(extensionDir)}" ${excludeFlags} ${folderName}`,
-  { stdio: "inherit" },
-)
+await new Promise((resolve, reject) => {
+  const output = createWriteStream(outputZip)
+  const archive = archiver("zip", { zlib: { level: 9 } })
 
-try {
-  unlinkSync(outputZip)
-} catch {
-  // Existing file may be locked briefly.
-}
+  output.on("close", () => {
+    const { size } = statSync(outputZip)
+    if (size < 1024) {
+      reject(new Error(`Extension zip is too small (${size} bytes)`))
+      return
+    }
+    console.log(`Extension packaged: ${outputZip} (${size} bytes)`)
+    resolve(undefined)
+  })
 
-copyFileSync(tempZip, outputZip)
-unlinkSync(tempZip)
+  archive.on("error", reject)
+  output.on("error", reject)
 
-console.log(`Extension packaged: ${outputZip}`)
+  archive.pipe(output)
+  archive.glob(
+    "**/*",
+    {
+      cwd: extensionDir,
+      dot: false,
+      ignore: [
+        "node_modules/**",
+        "dist/**",
+        "scripts/**",
+        ".git/**",
+        "package.json",
+        "package-lock.json",
+        "README.md",
+        "config.example.js",
+        ".gitignore",
+      ],
+    },
+    { prefix: folderName },
+  )
+  archive.finalize()
+})

@@ -3,7 +3,7 @@
  */
 
 /** Minimum visible video size to count as a camera visit. */
-const MIN_VIDEO_PX = 120;
+const MIN_VIDEO_PX = 80;
 
 /**
  * Runs inside the telemedicine tab. Returns VIDEO when an active video feed is visible.
@@ -14,13 +14,14 @@ function detectVisitModalityInPage() {
 
   const hasActiveVideo = videos.some((video) => {
     const rect = video.getBoundingClientRect();
-    if (rect.width < MIN_VIDEO_PX || rect.height < MIN_VIDEO_PX) {
-      return false;
+    const hasLayout = rect.width >= MIN_VIDEO_PX && rect.height >= MIN_VIDEO_PX;
+    const hasDecodedFrames =
+      video.videoWidth >= MIN_VIDEO_PX && video.videoHeight >= MIN_VIDEO_PX;
+    // Telehealth UIs often keep decorative <video> paused; decoded dimensions are the signal.
+    if (hasDecodedFrames && (hasLayout || video.readyState >= 2)) {
+      return true;
     }
-    if (video.readyState < 2 || video.paused) {
-      return false;
-    }
-    return video.videoWidth >= MIN_VIDEO_PX && video.videoHeight >= MIN_VIDEO_PX;
+    return hasLayout && video.readyState >= 2 && hasDecodedFrames;
   });
 
   return hasActiveVideo ? 'VIDEO' : 'AUDIO';
@@ -74,11 +75,8 @@ function mergeVisitModality(...signals) {
 function resolveRecordingVisitModality(options = {}) {
   const { detectedVisitModality, pageVisitModality, stopSignal } = options;
 
-  if (detectedVisitModality === 'VIDEO' || detectedVisitModality === 'AUDIO') {
-    return detectedVisitModality;
-  }
-
-  return mergeVisitModality(stopSignal, pageVisitModality);
+  // Prefer stop-time tab sampling over a false AUDIO lock from early page DOM checks.
+  return mergeVisitModality(stopSignal, detectedVisitModality, pageVisitModality);
 }
 
 function visitModalityLabel(modality) {

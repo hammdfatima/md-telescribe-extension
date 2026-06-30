@@ -51,6 +51,36 @@ let uiState = 'idle';
  * } | null}
  */
 let currentSession = null;
+/** @type {ReturnType<typeof setTimeout>[]} */
+let visitModalityRefreshTimers = [];
+
+function clearVisitModalityRefreshTimers() {
+  for (const timer of visitModalityRefreshTimers) {
+    clearTimeout(timer);
+  }
+  visitModalityRefreshTimers = [];
+}
+
+function scheduleVisitModalityRefresh() {
+  clearVisitModalityRefreshTimers();
+  for (const delayMs of [4000, 8000]) {
+    visitModalityRefreshTimers.push(
+      setTimeout(async () => {
+        const { recording } = await chrome.storage.local.get('recording');
+        if (!recording) {
+          return;
+        }
+        const response = await sendToBackground('refresh-visit-modality');
+        if (!response?.ok || !response.visitModality) {
+          return;
+        }
+        const modality = response.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
+        setAutoDetectHint(modality);
+        setStatus('recording', `Recording — ${formatDetectedVisitLabel(modality).toLowerCase()}`);
+      }, delayMs),
+    );
+  }
+}
 
 function formatDetectedVisitLabel(modality) {
   return modality === 'VIDEO' ? 'Video visit detected' : 'Audio visit detected';
@@ -774,6 +804,7 @@ async function startRecording() {
     const detectedModality = response.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
     setAutoDetectHint(detectedModality);
     setStatus('recording', `Recording — ${formatDetectedVisitLabel(detectedModality).toLowerCase()}`);
+    scheduleVisitModalityRefresh();
     await chrome.storage.local.set({ recording: true, processing: false, syncError: null });
   } catch (err) {
     console.error('[popup] startRecording failed:', err);
@@ -786,6 +817,7 @@ async function startRecording() {
 }
 
 async function stopRecording() {
+  clearVisitModalityRefreshTimers();
   showError('');
   setStatus('saving', 'Finishing recording…');
   startBtn.disabled = true;

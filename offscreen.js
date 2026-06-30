@@ -483,8 +483,8 @@ function startTabVideoSampling(videoTrack) {
     const avgBrightness = brightness / (pixelCount * 3);
     const avgDiff = diff / (pixelCount * 3);
 
-    // Active video tiles change between frames; static audio-only UIs stay mostly stable.
-    if (avgBrightness > 18 && avgDiff > 2.5) {
+    // Active video tiles change between frames; static camera feeds stay bright but stable.
+    if (avgBrightness > 18 && (avgDiff > 2.5 || avgBrightness > 28)) {
       visitModalityState.tabVideoHits += 1;
     }
   }, 2000);
@@ -495,17 +495,16 @@ function resolveVisitModality() {
     return 'VIDEO';
   }
 
-  // Page DOM said audio-only — ignore tab motion (YouTube, ads, etc.).
-  if (visitModalityState.pageHint === 'AUDIO') {
-    return 'AUDIO';
-  }
-
-  if (visitModalityState.tabSamples >= 2 && visitModalityState.tabVideoHits >= 1) {
+  if (visitModalityState.tabSamples >= 1 && visitModalityState.tabVideoHits >= 1) {
     return 'VIDEO';
   }
 
   if (visitModalityState.tabVideoHits > 0) {
     return 'VIDEO';
+  }
+
+  if (visitModalityState.pageHint === 'AUDIO') {
+    return 'AUDIO';
   }
 
   return 'AUDIO';
@@ -525,13 +524,25 @@ async function startRecording(payload) {
     return { ok: false, error: 'Missing tab capture stream ID.' };
   }
 
-  resetVisitModalityState(pageVisitModality ?? null);
-
   try {
     micStream = await getMicrophoneStream();
     tabStream = await getTabCaptureStream(streamId);
 
     const tabVideoTrack = tabStream.getVideoTracks()[0] ?? null;
+    const tabCapturesVideo =
+      tabVideoTrack &&
+      tabVideoTrack.readyState !== 'ended' &&
+      tabVideoTrack.enabled !== false;
+
+    // Tab capture includes video — don't lock to early page DOM "audio" (Meet/Zoom timing).
+    const pageHint =
+      pageVisitModality === 'VIDEO'
+        ? 'VIDEO'
+        : tabCapturesVideo
+          ? null
+          : pageVisitModality ?? null;
+    resetVisitModalityState(pageHint);
+
     if (tabVideoTrack) {
       startTabVideoSampling(tabVideoTrack);
     }
@@ -666,6 +677,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return { ok: true };
       case 'stop-recording':
         return stopRecording();
+      case 'get-visit-modality':
+        return { ok: true, visitModality: resolveVisitModality() };
       default:
         return { ok: false, error: `Unknown offscreen message: ${message.type}` };
     }

@@ -453,6 +453,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return { ok: true };
       }
 
+      case 'refresh-visit-modality': {
+        const state = await getRecordingState();
+        if (state !== 'recording') {
+          return { ok: false, error: 'Not recording' };
+        }
+        const result = await sendToOffscreen('get-visit-modality');
+        if (result?.ok && result.visitModality) {
+          await chrome.storage.session.set({ detectedVisitModality: result.visitModality });
+        }
+        return result;
+      }
+
       case 'stop-recording': {
         const state = await getRecordingState();
         if (state === 'starting') {

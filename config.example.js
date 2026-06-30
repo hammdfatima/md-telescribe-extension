@@ -5,9 +5,9 @@
  *   API_BASE_URL = http://localhost:5000
  *   APP_BASE_URL = http://localhost:3000
  *
- * Dev extension against AWS (unpacked load in chrome://extensions):
- *   API_BASE_URL = https://api.yourdomain.com
- *   APP_BASE_URL = https://app.yourdomain.com
+ * Dev extension against production AWS:
+ *   API_BASE_URL = https://api.mdtelescribe.com
+ *   APP_BASE_URL = https://mdtelescribe.com
  *
  * Chrome Web Store build (production):
  *   Use the same production URLs. Package with `npm run package` before upload.

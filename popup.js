@@ -34,6 +34,7 @@ const signupLinkBtn = document.getElementById('signupLinkBtn');
 const quotaBlockedPanelEl = document.getElementById('quotaBlockedPanel');
 const subscribeBtn = document.getElementById('subscribeBtn');
 const recordingSectionEl = document.getElementById('recordingSection');
+const userAvatarEl = document.getElementById('userAvatar');
 
 /** @type {{ user: { email: string, name?: string | null }, usage: { freeNotesRemaining: number, freeNotesLimit: number, hasActiveSubscription: boolean, canGenerateNotes: boolean, subscribeUrl: string } } | null} */
 let authSession = null;
@@ -86,18 +87,30 @@ function formatDetectedVisitLabel(modality) {
   return modality === 'VIDEO' ? 'Video visit detected' : 'Audio visit detected';
 }
 
+function getUserInitials(user) {
+  const source = (user?.name || user?.email || 'MD').trim();
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return source.slice(0, 2).toUpperCase();
+}
+
 function setAutoDetectHint(modality) {
   if (!autoDetectHintEl) {
     return;
   }
 
+  const textEl = autoDetectHintEl.querySelector('span') || autoDetectHintEl;
+  const defaultText =
+    'Visit type is detected automatically from your telemedicine tab (audio-only vs camera).';
+
   if (!modality) {
-    autoDetectHintEl.textContent =
-      'Visit type is detected automatically from your telemedicine tab (audio-only vs camera).';
+    textEl.textContent = defaultText;
     return;
   }
 
-  autoDetectHintEl.textContent = `${formatDetectedVisitLabel(modality)} — clinical notes will use the matching template.`;
+  textEl.textContent = `${formatDetectedVisitLabel(modality)} — clinical notes will use the matching template.`;
 }
 
 function updateAuthUI() {
@@ -111,6 +124,9 @@ function updateAuthUI() {
 
   if (loggedIn && authSession) {
     authUserEmailEl.textContent = authSession.user.name || authSession.user.email;
+    if (userAvatarEl) {
+      userAvatarEl.textContent = getUserInitials(authSession.user);
+    }
     if (authSession.usage.hasActiveSubscription) {
       usageHintEl.textContent = 'Subscription active — unlimited note generation.';
     } else {
@@ -279,7 +295,7 @@ function setStatus(state, message) {
   statusEl.dataset.state = state;
 
   const labels = {
-    idle: 'Idle',
+    idle: 'Ready to record',
     recording: 'Recording',
     saving: 'Finishing recording…',
     syncing: 'Connecting to server…',

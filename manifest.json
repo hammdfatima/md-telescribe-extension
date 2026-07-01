@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Tab + Mic Recorder",
+  "name": "md telescribe",
   "version": "1.4.0",
-  "description": "Records active tab audio and microphone input, mixes them, saves WebM + transcript locally, and syncs notes to the server.",
+  "description": "Record telemedicine visits and generate AI-powered SOAP notes with md telescribe.",
   "permissions": [
     "tabCapture",
     "activeTab",

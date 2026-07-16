@@ -44,7 +44,7 @@ const userAvatarEl = document.getElementById('userAvatar');
 /** @type {{ user: { email: string, name?: string | null }, usage: { freeNotesRemaining: number, freeNotesLimit: number, hasActiveSubscription: boolean, canGenerateNotes: boolean, subscribeUrl: string } } | null} */
 let authSession = null;
 
-/** @type {'idle' | 'recording' | 'saving' | 'syncing' | 'generating' | 'ready' | 'notes' | 'saved'} */
+/** @type {'idle' | 'recording' | 'paused' | 'saving' | 'syncing' | 'uploading' | 'generating' | 'ready' | 'notes' | 'saved'} */
 let uiState = 'idle';
 
 /**
@@ -72,7 +72,10 @@ function scheduleVisitModalityRefresh() {
   for (const delayMs of [4000, 8000]) {
     visitModalityRefreshTimers.push(
       setTimeout(async () => {
-        const { recording } = await chrome.storage.local.get('recording');
+        const { recording, recordingPaused } = await chrome.storage.local.get([
+          'recording',
+          'recordingPaused',
+        ]);
         if (!recording) {
           return;
         }
@@ -82,6 +85,10 @@ function scheduleVisitModalityRefresh() {
         }
         const modality = response.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
         setAutoDetectHint(modality);
+        // Never overwrite a paused UI — that resets the Pause/Resume button.
+        if (recordingPaused || uiState === 'paused') {
+          return;
+        }
         setStatus('recording', `Recording — ${formatDetectedVisitLabel(modality).toLowerCase()}`);
       }, delayMs),
     );
@@ -583,11 +590,24 @@ function startProcessingWatchdog() {
 
   processingWatchdogId = window.setInterval(() => {
     void (async () => {
-      const { processing, pendingSession, syncError } = await chrome.storage.local.get([
+      if (uiState === 'recording' || uiState === 'paused') {
+        clearProcessingWatchdog();
+        stopProcessingKeepAlive();
+        return;
+      }
+
+      const { processing, pendingSession, syncError, recording } = await chrome.storage.local.get([
         'processing',
         'pendingSession',
         'syncError',
+        'recording',
       ]);
+
+      if (recording) {
+        clearProcessingWatchdog();
+        stopProcessingKeepAlive();
+        return;
+      }
 
       if (pendingSession?.note) {
         clearProcessingWatchdog();
@@ -650,6 +670,32 @@ function restoreFromStorage() {
   chrome.storage.local.get(
     ['recording', 'recordingPaused', 'pendingSession', 'processing', 'processingStage', 'syncError'],
     ({ recording, recordingPaused, pendingSession, processing, processingStage, syncError }) => {
+      // Live capture always wins over a leftover notes/error session.
+      if (recording) {
+        clearProcessingWatchdog();
+        hideSessionPanelOnly();
+        chrome.storage.session.get(
+          ['detectedVisitModality', 'recordingState'],
+          ({ detectedVisitModality, recordingState }) => {
+            const paused = recordingPaused || recordingState === 'paused';
+            if (paused) {
+              setStatus('paused', 'Recording paused — click Resume to continue');
+              return;
+            }
+            if (detectedVisitModality) {
+              setAutoDetectHint(detectedVisitModality);
+              setStatus(
+                'recording',
+                `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`,
+              );
+            } else {
+              setStatus('recording');
+            }
+          },
+        );
+        return;
+      }
+
       if (pendingSession?.files || pendingSession?.meetingId || pendingSession?.processingNotes) {
         if (pendingSession.processingNotes && !processing && !pendingSession.note) {
           if (pendingSession.meetingId) {
@@ -701,29 +747,47 @@ function restoreFromStorage() {
         chrome.storage.local.remove('syncError');
         return;
       }
-
-      if (recording) {
-        chrome.storage.session.get(
-          ['detectedVisitModality', 'recordingState'],
-          ({ detectedVisitModality, recordingState }) => {
-            const paused = recordingPaused || recordingState === 'paused';
-            if (paused) {
-              setStatus('paused', 'Recording paused — click Resume to continue');
-              return;
-            }
-            if (detectedVisitModality) {
-              setAutoDetectHint(detectedVisitModality);
-              setStatus(
-                'recording',
-                `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`,
-              );
-            } else {
-              setStatus('recording');
-            }
-          },
-        );
-      }
     }
+  );
+}
+
+/** Hide the notes panel without clearing storage (used when a live recording is active). */
+function hideSessionPanelOnly() {
+  currentSession = null;
+  sessionPanel.classList.remove('visible');
+  notesContentEl.value = '';
+  notesDisplayEl.innerHTML = '';
+  setNotesViewMode('empty');
+  notesContentEl.classList.remove('hidden');
+  notesSummaryEl.textContent = '';
+  setSaveStatus('');
+  updateSessionButtons();
+}
+
+async function restoreRecordingStatusFromStorage() {
+  const { recording, recordingPaused } = await chrome.storage.local.get([
+    'recording',
+    'recordingPaused',
+  ]);
+  if (!recording) {
+    setStatus('idle');
+    return;
+  }
+
+  const { recordingState, detectedVisitModality } = await chrome.storage.session.get([
+    'recordingState',
+    'detectedVisitModality',
+  ]);
+  const paused = recordingPaused || recordingState === 'paused';
+  if (paused) {
+    setStatus('paused', 'Recording paused — click Resume to continue');
+    return;
+  }
+  setStatus(
+    'recording',
+    detectedVisitModality
+      ? `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`
+      : 'Recording',
   );
 }
 
@@ -890,17 +954,30 @@ async function startRecording() {
 
 async function pauseOrResumeRecording() {
   showError('');
-  const pausing = uiState === 'recording';
+  hideSessionPanelOnly();
+
+  // Prefer stored state over uiState so a stale "Recording" label still resumes correctly.
+  const { recordingPaused } = await chrome.storage.local.get('recordingPaused');
+  const { recordingState } = await chrome.storage.session.get('recordingState');
+  const isPaused =
+    recordingPaused === true || recordingState === 'paused' || uiState === 'paused';
+  const pausing = !isPaused;
+
+  pauseBtn.disabled = true;
+  // Optimistic UI so the label flips immediately.
+  setPauseButton(pausing);
 
   try {
     const response = await sendToBackground(pausing ? 'pause-recording' : 'resume-recording');
     if (!response?.ok) {
+      setPauseButton(!pausing);
       throw new Error(
         response?.error || (pausing ? 'Could not pause recording.' : 'Could not resume recording.'),
       );
     }
 
     if (pausing) {
+      clearVisitModalityRefreshTimers();
       setStatus('paused', 'Recording paused — click Resume to continue');
     } else {
       const { detectedVisitModality } = await chrome.storage.session.get('detectedVisitModality');
@@ -910,10 +987,12 @@ async function pauseOrResumeRecording() {
           ? `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`
           : 'Recording',
       );
+      scheduleVisitModalityRefresh();
     }
   } catch (err) {
     console.error('[popup] pause/resume failed:', err);
     showError(err instanceof Error ? err.message : String(err));
+    await restoreRecordingStatusFromStorage();
   }
 }
 
@@ -1054,6 +1133,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
 
   if (changes.pendingSession?.newValue) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     const session = changes.pendingSession.newValue;
     if (session.files || session.meetingId || session.note || session.processingNotes) {
       showSession(session);
@@ -1065,20 +1147,32 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 
   if (changes.processing?.newValue === true) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     chrome.storage.local.get('processingStage', ({ processingStage }) => {
       applyProcessingStage(processingStage);
     });
   }
 
   if (changes.processingStage?.newValue) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     applyProcessingStage(changes.processingStage.newValue);
   }
 
   if (changes.processing?.newValue === false && changes.pendingSession?.newValue?.note) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     showSession(changes.pendingSession.newValue);
   }
 
   if (changes.syncError?.newValue) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     const session = changes.pendingSession?.newValue;
     if (session?.meetingId && !session?.note) {
       void sendToBackground('poll-meeting-note', {
@@ -1136,6 +1230,10 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === 'sync-status') {
+    // Ignore late upload/generate updates while a new capture is already running.
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     if (message.data?.stage === 'uploading') {
       setStatus('uploading', 'Uploading audio…');
     }
@@ -1145,6 +1243,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === 'session-processing' && message.data?.files) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     showSession({
       meetingId: null,
       note: null,
@@ -1157,6 +1258,10 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === 'processing-error') {
+    if (uiState === 'recording' || uiState === 'paused') {
+      // Stale Whisper/note failure from a previous stop — do not interrupt live capture.
+      return;
+    }
     clearProcessingWatchdog();
     stopProcessingKeepAlive();
     if (message.data?.session) {
@@ -1167,6 +1272,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === 'notes-ready' && message.data) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      return;
+    }
     currentSession = message.data;
     showSession(message.data);
     void refreshAuthSession();
@@ -1200,7 +1308,8 @@ downloadTextBtn.addEventListener('click', () => downloadRecordingFile('text'));
 startNewRecordingBtn.addEventListener('click', startRecording);
 dismissSessionBtn.addEventListener('click', () => {
   hideSession();
-  setStatus('idle');
+  showError('');
+  void restoreRecordingStatusFromStorage();
 });
 
 updateSessionButtons();

@@ -28,16 +28,18 @@
   box-sizing: border-box;
 }
 
+/* Single scroller only — avoid nested html/body scrollbars in the popup. */
 html {
-  overflow: hidden;
+  width: 400px;
+  max-height: 600px;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 body {
   width: 400px;
-  max-height: 620px;
   margin: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--foreground);
   background:
@@ -537,10 +539,17 @@ body {
 }
 
 /* Mic setup page */
+html:has(body.mic-setup-page) {
+  width: auto;
+  max-height: none;
+  overflow: auto;
+}
+
 body.mic-setup-page {
   width: auto;
   max-height: none;
   min-height: 100vh;
+  overflow: visible;
   display: flex;
   align-items: center;
   justify-content: center;

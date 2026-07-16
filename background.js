@@ -9,6 +9,16 @@ const OFFSCREEN_URL = 'offscreen.html';
 /** @type {{ audio?: { buffer: ArrayBuffer, filename: string }, text?: { text: string, filename: string } } | null} */
 let pendingRecordingFiles = null;
 
+/**
+ * Bumped when the user dismisses a session or starts a new recording so late
+ * Whisper/note-generation results cannot overwrite an active capture UI.
+ */
+let processingEpoch = 0;
+
+function invalidateProcessing() {
+  processingEpoch += 1;
+}
+
 async function ensureOffscreenDocument() {
   const existingContexts = await chrome.runtime.getContexts({
     contextTypes: ['OFFSCREEN_DOCUMENT'],
@@ -260,12 +270,24 @@ async function processStoppedRecording(payload) {
  * @param {{ audioBuffer: ArrayBuffer, micAudioBuffer?: ArrayBuffer | null, tabAudioBuffer?: ArrayBuffer | null, filename: string, visitModality?: 'AUDIO' | 'VIDEO' }} payload
  */
 async function runProcessStoppedRecording(payload) {
+  const epoch = processingEpoch;
   let meetingId = null;
   let note = null;
   let visitModality = payload.visitModality;
 
+  const isStale = async () => {
+    if (epoch !== processingEpoch) {
+      return true;
+    }
+    const { recording } = await chrome.storage.local.get('recording');
+    return Boolean(recording);
+  };
+
   try {
     await setProcessingStage('uploading');
+    if (await isStale()) {
+      return;
+    }
     notifyPopup('sync-status', { stage: 'uploading' });
 
     await wakeBackend().catch(() => {});
@@ -285,6 +307,9 @@ async function runProcessStoppedRecording(payload) {
       visitModality,
     );
     meetingId = meeting.id;
+    if (await isStale()) {
+      return;
+    }
     await updatePendingSessionMeeting(meetingId, visitModality);
 
     await uploadMeetingAudio(meetingId, payload.audioBuffer, 'mixed');
@@ -297,14 +322,24 @@ async function runProcessStoppedRecording(payload) {
     console.log('[background] uploaded audio bytes:', payload.audioBuffer.byteLength);
     await completeMeeting(meetingId);
 
+    if (await isStale()) {
+      return;
+    }
     await setProcessingStage('generating');
     notifyPopup('sync-status', { stage: 'generating' });
 
     const generated = await generateMeetingNotes(meetingId, visitModality);
     note = generated.note;
     visitModality = generated.visitModality ?? visitModality;
+    if (await isStale()) {
+      return;
+    }
     await finishNotesSession(meetingId, note, visitModality, payload.filename);
   } catch (err) {
+    if (await isStale()) {
+      return;
+    }
+
     const backendError = err instanceof Error ? err.message : String(err);
     const errorCode = err instanceof ApiClientError ? err.code : undefined;
     console.error('[background] processStoppedRecording failed:', err);
@@ -312,6 +347,9 @@ async function runProcessStoppedRecording(payload) {
     if (meetingId && !note) {
       try {
         const recovered = await pollMeetingNote(meetingId, { timeoutMs: 45_000, intervalMs: 2000 });
+        if (await isStale()) {
+          return;
+        }
         note = recovered.note;
         visitModality = recovered.visitModality ?? visitModality;
         await finishNotesSession(meetingId, note, visitModality, payload.filename);
@@ -319,6 +357,10 @@ async function runProcessStoppedRecording(payload) {
       } catch (recoverErr) {
         console.warn('[background] note recovery after error failed:', recoverErr);
       }
+    }
+
+    if (await isStale()) {
+      return;
     }
 
     const session = {
@@ -401,6 +443,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.type) {
       case 'start-recording': {
         pendingRecordingFiles = null;
+        invalidateProcessing();
 
         const state = await getRecordingState();
         if (state === 'starting' || state === 'recording' || state === 'paused' || state === 'stopping') {
@@ -459,6 +502,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case 'pause-recording': {
         const state = await getRecordingState();
+        if (state === 'paused') {
+          await chrome.storage.local.set({ recording: true, recordingPaused: true });
+          return { ok: true, paused: true };
+        }
         if (state !== 'recording') {
           return { ok: false, error: 'Recording is not active.' };
         }
@@ -473,6 +520,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case 'resume-recording': {
         const state = await getRecordingState();
+        if (state === 'recording') {
+          await chrome.storage.local.set({ recording: true, recordingPaused: false });
+          return { ok: true, paused: false };
+        }
         if (state !== 'paused') {
           return { ok: false, error: 'Recording is not paused.' };
         }
@@ -772,6 +823,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case 'clear-session': {
         pendingRecordingFiles = null;
+        invalidateProcessing();
         await chrome.storage.local.remove(['pendingSession', 'syncError', 'processingStage']);
         await chrome.storage.local.set({ processing: false });
         return { ok: true };

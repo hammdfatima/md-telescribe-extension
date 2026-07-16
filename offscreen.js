@@ -57,6 +57,7 @@ let micOnlyDestination = null;
 let tabOnlyDestination = null;
 
 let isRecording = false;
+let isPaused = false;
 
 /** @type {ReturnType<typeof setInterval> | null} */
 let tabVideoSampleTimer = null;
@@ -257,7 +258,7 @@ function finalizeRecorder(recorder, chunks, mimeType) {
     };
 
     try {
-      if (recorder.state === 'recording') {
+      if (recorder.state === 'recording' || recorder.state === 'paused') {
         recorder.requestData();
       }
       recorder.stop();
@@ -323,6 +324,7 @@ async function cleanup() {
   }
 
   isRecording = false;
+  isPaused = false;
 }
 
 /**
@@ -447,7 +449,7 @@ function startTabVideoSampling(videoTrack) {
   tabVideoSamplerEl = video;
 
   tabVideoSampleTimer = setInterval(() => {
-    if (!isRecording || video.readyState < 2) {
+    if (!isRecording || isPaused || video.readyState < 2) {
       return;
     }
 
@@ -592,6 +594,7 @@ async function startRecording(payload) {
     micRecorder.start(timesliceMs);
     tabRecorder.start(timesliceMs);
     isRecording = true;
+    isPaused = false;
 
     return { ok: true, visitModality: resolveVisitModality() };
   } catch (err) {
@@ -615,6 +618,51 @@ function blobToDataUrl(blob) {
 }
 
 /**
+ * Pause all active MediaRecorders without releasing mic/tab streams.
+ */
+async function pauseRecording() {
+  if (!isRecording) {
+    return { ok: false, error: 'No active recording to pause.' };
+  }
+  if (isPaused) {
+    return { ok: true, paused: true };
+  }
+
+  const recorders = [mediaRecorder, micRecorder, tabRecorder];
+  for (const recorder of recorders) {
+    if (recorder?.state === 'recording') {
+      recorder.pause();
+    }
+  }
+
+  // Keep AudioContext running so tab monitoring still plays the call.
+  isPaused = true;
+  return { ok: true, paused: true };
+}
+
+/**
+ * Resume all paused MediaRecorders.
+ */
+async function resumeRecording() {
+  if (!isRecording) {
+    return { ok: false, error: 'No active recording to resume.' };
+  }
+  if (!isPaused) {
+    return { ok: true, paused: false };
+  }
+
+  const recorders = [mediaRecorder, micRecorder, tabRecorder];
+  for (const recorder of recorders) {
+    if (recorder?.state === 'paused') {
+      recorder.resume();
+    }
+  }
+
+  isPaused = false;
+  return { ok: true, paused: false };
+}
+
+/**
  * Stop recording and return audio immediately — transcription runs on the server.
  */
 async function stopRecording() {
@@ -624,6 +672,11 @@ async function stopRecording() {
   }
 
   try {
+    // Ensure recorders are not stuck paused before finalizing.
+    if (isPaused) {
+      await resumeRecording();
+    }
+
     const mixedBlob = await finalizeRecorder(mediaRecorder, recordedChunks, MIME_TYPE);
     const micBlob =
       micRecordedChunks.length > 0
@@ -672,6 +725,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.type) {
       case 'start-recording':
         return startRecording(message.data);
+      case 'pause-recording':
+        return pauseRecording();
+      case 'resume-recording':
+        return resumeRecording();
       case 'force-cleanup':
         await cleanup();
         return { ok: true };

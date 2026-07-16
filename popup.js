@@ -5,6 +5,9 @@
 const statusEl = document.getElementById('status');
 const statusTextEl = document.getElementById('statusText');
 const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const pauseBtnLabel = document.getElementById('pauseBtnLabel');
+const pauseBtnIcon = document.getElementById('pauseBtnIcon');
 const stopBtn = document.getElementById('stopBtn');
 const errorEl = document.getElementById('error');
 const sessionPanel = document.getElementById('sessionPanel');
@@ -14,6 +17,8 @@ const notesContentEl = document.getElementById('notesContent');
 const notesDisplayEl = document.getElementById('notesDisplay');
 const copyNotesBtn = document.getElementById('copyNotesBtn');
 const saveNotesBtn = document.getElementById('saveNotesBtn');
+const notesConsentRow = document.getElementById('notesConsentRow');
+const notesConsentCheckbox = document.getElementById('notesConsentCheckbox');
 const downloadAudioBtn = document.getElementById('downloadAudioBtn');
 const downloadTextBtn = document.getElementById('downloadTextBtn');
 const startNewRecordingBtn = document.getElementById('startNewRecordingBtn');
@@ -290,6 +295,22 @@ async function copyNotesToClipboard() {
   }
 }
 
+function setPauseButton(paused) {
+  if (!pauseBtn || !pauseBtnLabel || !pauseBtnIcon) return;
+
+  if (paused) {
+    pauseBtnLabel.textContent = 'Resume';
+    pauseBtnIcon.innerHTML =
+      '<polygon points="8,5 19,12 8,19"></polygon>';
+    pauseBtn.setAttribute('aria-label', 'Resume recording');
+  } else {
+    pauseBtnLabel.textContent = 'Pause';
+    pauseBtnIcon.innerHTML =
+      '<rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect>';
+    pauseBtn.setAttribute('aria-label', 'Pause recording');
+  }
+}
+
 function setStatus(state, message) {
   uiState = state;
   statusEl.dataset.state = state;
@@ -297,6 +318,7 @@ function setStatus(state, message) {
   const labels = {
     idle: 'Ready to record',
     recording: 'Recording',
+    paused: 'Recording paused',
     saving: 'Finishing recording…',
     syncing: 'Connecting to server…',
     uploading: 'Uploading audio…',
@@ -307,8 +329,22 @@ function setStatus(state, message) {
   };
 
   statusTextEl.textContent = message || labels[state];
-  startBtn.disabled = ['recording', 'saving', 'syncing', 'uploading', 'generating'].includes(state);
-  stopBtn.disabled = state !== 'recording';
+  startBtn.disabled = ['recording', 'paused', 'saving', 'syncing', 'uploading', 'generating'].includes(
+    state,
+  );
+  stopBtn.disabled = !['recording', 'paused'].includes(state);
+  pauseBtn.disabled = !['recording', 'paused'].includes(state);
+  setPauseButton(state === 'paused');
+}
+
+function updateSaveNotesEnabled() {
+  const hasNote = Boolean(currentSession?.note);
+  const notesSaved = Boolean(currentSession?.notesSaved);
+  const processingNotes = Boolean(currentSession?.processingNotes);
+  const canSave = hasNote && !notesSaved && !processingNotes;
+  const consented = Boolean(notesConsentCheckbox?.checked);
+
+  saveNotesBtn.disabled = !canSave || !consented;
 }
 
 function updateSessionButtons() {
@@ -318,15 +354,22 @@ function updateSessionButtons() {
   const processingNotes = Boolean(currentSession?.processingNotes);
   const hasAudio = Boolean(currentSession?.files?.hasAudio);
   const hasText = Boolean(currentSession?.files?.hasText);
+  const showSave = hasNote && !notesSaved && !processingNotes;
 
   recordingButtonsEl.classList.toggle('hidden', hasSession);
   sessionPanel.classList.toggle('visible', hasSession);
 
-  saveNotesBtn.classList.toggle('hidden', !hasNote || notesSaved || processingNotes);
+  notesConsentRow?.classList.toggle('hidden', !showSave);
+  if (!showSave && notesConsentCheckbox) {
+    notesConsentCheckbox.checked = false;
+  }
+
+  saveNotesBtn.classList.toggle('hidden', !showSave);
   downloadAudioBtn.classList.toggle('hidden', !hasAudio);
   downloadTextBtn.classList.toggle('hidden', !hasText);
   startNewRecordingBtn.classList.toggle('hidden', !notesSaved);
   dismissSessionBtn.classList.toggle('hidden', !hasSession);
+  updateSaveNotesEnabled();
 }
 
 async function refreshFileAvailability() {
@@ -605,8 +648,8 @@ function startProcessingWatchdog() {
 
 function restoreFromStorage() {
   chrome.storage.local.get(
-    ['recording', 'pendingSession', 'processing', 'processingStage', 'syncError'],
-    ({ recording, pendingSession, processing, processingStage, syncError }) => {
+    ['recording', 'recordingPaused', 'pendingSession', 'processing', 'processingStage', 'syncError'],
+    ({ recording, recordingPaused, pendingSession, processing, processingStage, syncError }) => {
       if (pendingSession?.files || pendingSession?.meetingId || pendingSession?.processingNotes) {
         if (pendingSession.processingNotes && !processing && !pendingSession.note) {
           if (pendingSession.meetingId) {
@@ -660,17 +703,25 @@ function restoreFromStorage() {
       }
 
       if (recording) {
-        chrome.storage.session.get('detectedVisitModality', ({ detectedVisitModality }) => {
-          if (detectedVisitModality) {
-            setAutoDetectHint(detectedVisitModality);
-            setStatus(
-              'recording',
-              `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`,
-            );
-          } else {
-            setStatus('recording');
-          }
-        });
+        chrome.storage.session.get(
+          ['detectedVisitModality', 'recordingState'],
+          ({ detectedVisitModality, recordingState }) => {
+            const paused = recordingPaused || recordingState === 'paused';
+            if (paused) {
+              setStatus('paused', 'Recording paused — click Resume to continue');
+              return;
+            }
+            if (detectedVisitModality) {
+              setAutoDetectHint(detectedVisitModality);
+              setStatus(
+                'recording',
+                `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`,
+              );
+            } else {
+              setStatus('recording');
+            }
+          },
+        );
       }
     }
   );
@@ -781,8 +832,13 @@ async function startRecording() {
     const { recording } = await chrome.storage.local.get('recording');
     const { recordingState = 'idle' } = await chrome.storage.session.get('recordingState');
 
-    if (recording || recordingState === 'recording' || recordingState === 'starting') {
-      setStatus('recording');
+    if (
+      recording ||
+      recordingState === 'recording' ||
+      recordingState === 'paused' ||
+      recordingState === 'starting'
+    ) {
+      setStatus(recordingState === 'paused' ? 'paused' : 'recording');
       showError('Recording is already in progress. Click Stop Recording first.');
       return;
     }
@@ -832,11 +888,41 @@ async function startRecording() {
   }
 }
 
+async function pauseOrResumeRecording() {
+  showError('');
+  const pausing = uiState === 'recording';
+
+  try {
+    const response = await sendToBackground(pausing ? 'pause-recording' : 'resume-recording');
+    if (!response?.ok) {
+      throw new Error(
+        response?.error || (pausing ? 'Could not pause recording.' : 'Could not resume recording.'),
+      );
+    }
+
+    if (pausing) {
+      setStatus('paused', 'Recording paused — click Resume to continue');
+    } else {
+      const { detectedVisitModality } = await chrome.storage.session.get('detectedVisitModality');
+      setStatus(
+        'recording',
+        detectedVisitModality
+          ? `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`
+          : 'Recording',
+      );
+    }
+  } catch (err) {
+    console.error('[popup] pause/resume failed:', err);
+    showError(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function stopRecording() {
   clearVisitModalityRefreshTimers();
   showError('');
   setStatus('saving', 'Finishing recording…');
   startBtn.disabled = true;
+  pauseBtn.disabled = true;
   stopBtn.disabled = true;
 
   try {
@@ -866,8 +952,10 @@ async function stopRecording() {
     clearProcessingWatchdog();
     stopProcessingKeepAlive();
   } finally {
-    startBtn.disabled = ['recording', 'saving', 'syncing', 'generating'].includes(uiState);
-    stopBtn.disabled = uiState !== 'recording';
+    startBtn.disabled = ['recording', 'paused', 'saving', 'syncing', 'generating'].includes(uiState);
+    stopBtn.disabled = !['recording', 'paused'].includes(uiState);
+    pauseBtn.disabled = !['recording', 'paused'].includes(uiState);
+    setPauseButton(uiState === 'paused');
   }
 }
 
@@ -916,6 +1004,11 @@ async function saveNotes() {
     return;
   }
 
+  if (!notesConsentCheckbox?.checked) {
+    showError('Please confirm patient consent and note review before saving.');
+    return;
+  }
+
   showError('');
   setSaveStatus('Saving…');
   saveNotesBtn.disabled = true;
@@ -944,13 +1037,16 @@ async function saveNotes() {
       await chrome.storage.local.set({ pendingSession: currentSession });
     }
 
+    if (notesConsentCheckbox) {
+      notesConsentCheckbox.checked = false;
+    }
     showSoapNotes(currentSession.note, true);
   } catch (err) {
     console.error('[popup] saveNotes failed:', err);
     setSaveStatus('');
     showError(err instanceof Error ? err.message : String(err));
   } finally {
-    saveNotesBtn.disabled = false;
+    updateSaveNotesEnabled();
   }
 }
 
@@ -1000,6 +1096,23 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
     setStatus('idle', 'Could not generate notes');
     showError(formatServerError(changes.syncError.newValue));
+  }
+
+  if (changes.recordingPaused) {
+    if (changes.recording?.newValue === false) {
+      // stopped
+    } else if (changes.recordingPaused.newValue === true) {
+      setStatus('paused', 'Recording paused — click Resume to continue');
+    } else if (changes.recordingPaused.newValue === false && changes.recording?.newValue !== false) {
+      chrome.storage.session.get('detectedVisitModality', ({ detectedVisitModality }) => {
+        setStatus(
+          'recording',
+          detectedVisitModality
+            ? `Recording — ${formatDetectedVisitLabel(detectedVisitModality).toLowerCase()}`
+            : 'Recording',
+        );
+      });
+    }
   }
 
   if (changes.micPermissionReady?.newValue === true && changes.pendingStartRecording?.newValue === true) {
@@ -1068,6 +1181,7 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 startBtn.addEventListener('click', startRecording);
+pauseBtn.addEventListener('click', pauseOrResumeRecording);
 stopBtn.addEventListener('click', stopRecording);
 loginBtn.addEventListener('click', handleLogin);
 logoutBtn.addEventListener('click', handleLogout);
@@ -1079,6 +1193,7 @@ loginPasswordEl?.addEventListener('keydown', (event) => {
   }
 });
 saveNotesBtn.addEventListener('click', saveNotes);
+notesConsentCheckbox?.addEventListener('change', updateSaveNotesEnabled);
 copyNotesBtn.addEventListener('click', copyNotesToClipboard);
 downloadAudioBtn.addEventListener('click', () => downloadRecordingFile('audio'));
 downloadTextBtn.addEventListener('click', () => downloadRecordingFile('text'));

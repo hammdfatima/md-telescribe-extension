@@ -195,7 +195,7 @@ async function releaseTabCapture() {
 
   pendingRecordingFiles = null;
   await setRecordingState('idle');
-  await chrome.storage.local.set({ recording: false, processing: false });
+  await chrome.storage.local.set({ recording: false, recordingPaused: false, processing: false });
 }
 
 /** @type {Promise<void> | null} */
@@ -403,7 +403,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         pendingRecordingFiles = null;
 
         const state = await getRecordingState();
-        if (state === 'starting' || state === 'recording' || state === 'stopping') {
+        if (state === 'starting' || state === 'recording' || state === 'paused' || state === 'stopping') {
           return { ok: false, error: 'Recording is already in progress. Click Stop Recording first.' };
         }
 
@@ -432,7 +432,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             await chrome.storage.session.set({
               detectedVisitModality,
             });
-            await chrome.storage.local.set({ recording: true, processing: false, syncError: null });
+            await chrome.storage.local.set({
+              recording: true,
+              recordingPaused: false,
+              processing: false,
+              syncError: null,
+            });
             wakeBackend().catch(() => {});
           } else {
             await setRecordingState('idle');
@@ -452,6 +457,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
       }
 
+      case 'pause-recording': {
+        const state = await getRecordingState();
+        if (state !== 'recording') {
+          return { ok: false, error: 'Recording is not active.' };
+        }
+
+        const result = await sendToOffscreen('pause-recording');
+        if (result?.ok) {
+          await setRecordingState('paused');
+          await chrome.storage.local.set({ recording: true, recordingPaused: true });
+        }
+        return result;
+      }
+
+      case 'resume-recording': {
+        const state = await getRecordingState();
+        if (state !== 'paused') {
+          return { ok: false, error: 'Recording is not paused.' };
+        }
+
+        const result = await sendToOffscreen('resume-recording');
+        if (result?.ok) {
+          await setRecordingState('recording');
+          await chrome.storage.local.set({ recording: true, recordingPaused: false });
+        }
+        return result;
+      }
+
       case 'release-tab-capture': {
         await releaseTabCapture();
         return { ok: true };
@@ -459,7 +492,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case 'refresh-visit-modality': {
         const state = await getRecordingState();
-        if (state !== 'recording') {
+        if (state !== 'recording' && state !== 'paused') {
           return { ok: false, error: 'Not recording' };
         }
         const result = await sendToOffscreen('get-visit-modality');
@@ -473,6 +506,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const state = await getRecordingState();
         if (state === 'starting') {
           return { ok: false, error: 'Recording is still starting. Wait a moment and try again.' };
+        }
+        if (state !== 'recording' && state !== 'paused' && state !== 'stopping') {
+          return { ok: false, error: 'No active recording to stop.' };
         }
 
         await setRecordingState('stopping');
@@ -507,10 +543,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           }
           await closeOffscreenDocument();
           await setRecordingState('idle');
+          await chrome.storage.local.set({ recordingPaused: false });
         }
 
         if (!result?.ok) {
-          await chrome.storage.local.set({ recording: false, processing: false });
+          await chrome.storage.local.set({ recording: false, recordingPaused: false, processing: false });
           return result;
         }
 
@@ -534,6 +571,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         await chrome.storage.local.set({
           recording: false,
+          recordingPaused: false,
           processing: true,
           processingStage: 'uploading',
           pendingSession: initialSession,
@@ -759,7 +797,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.target === 'background' && message.type === 'offscreen-error') {
     notifyPopup('recording-error', message.data);
-    chrome.storage.local.set({ recording: false, processing: false });
+    chrome.storage.local.set({ recording: false, recordingPaused: false, processing: false });
     chrome.storage.session.set({ recordingState: 'idle' });
   }
 });

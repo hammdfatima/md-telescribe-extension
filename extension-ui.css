@@ -56,6 +56,7 @@ body {
 .brand-header {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   padding: 4px 2px 2px;
 }
@@ -66,6 +67,14 @@ body {
   flex-shrink: 0;
   border-radius: 10px;
   box-shadow: var(--shadow-sm);
+}
+
+.brand-logo-full {
+  display: block;
+  width: auto;
+  height: 44px;
+  max-width: 100%;
+  object-fit: contain;
 }
 
 .brand-text {
@@ -137,6 +146,11 @@ body {
   background: var(--danger);
   box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.16);
   animation: pulse 1.2s ease-in-out infinite;
+}
+
+.status[data-state="paused"] .status-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.16);
 }
 
 .status[data-state="saving"] .status-dot,
@@ -256,6 +270,34 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.consent-row {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border, #fcd34d);
+  border-radius: var(--radius-md, 10px);
+  background: #fffbeb;
+}
+
+.consent-label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #92400e;
+  cursor: pointer;
+}
+
+.consent-label input[type='checkbox'] {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  accent-color: var(--brand-primary, #377dec);
+  cursor: pointer;
 }
 
 .quota-panel {

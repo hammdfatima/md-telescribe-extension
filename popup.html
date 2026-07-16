@@ -9,11 +9,7 @@
 <body>
   <div class="app">
     <header class="brand-header">
-      <img src="icons/logo.svg" alt="" class="brand-logo" width="36" height="36" />
-      <div class="brand-text">
-        <h1 class="brand-title">md <span>telescribe</span></h1>
-        <p class="brand-tagline">AI clinical notes for telemedicine</p>
-      </div>
+      <img src="icons/logo.png" alt="md telescribe" class="brand-logo-full" />
     </header>
 
     <div id="status" class="status" data-state="idle">
@@ -74,6 +70,13 @@
           </svg>
           Start recording
         </button>
+        <button id="pauseBtn" type="button" class="btn btn-secondary" disabled>
+          <svg id="pauseBtnIcon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="6" y="5" width="4" height="14" rx="1"></rect>
+            <rect x="14" y="5" width="4" height="14" rx="1"></rect>
+          </svg>
+          <span id="pauseBtnLabel">Pause</span>
+        </button>
         <button id="stopBtn" type="button" class="btn btn-danger-outline" disabled>
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
@@ -99,8 +102,17 @@
       </div>
       <textarea id="notesContent" placeholder="Generated SOAP notes will appear here…"></textarea>
       <div id="notesDisplay" class="notes-display hidden" aria-readonly="true"></div>
+      <div id="notesConsentRow" class="consent-row hidden">
+        <label class="consent-label" for="notesConsentCheckbox">
+          <input id="notesConsentCheckbox" type="checkbox" />
+          <span>
+            I confirm the patient consented to recording this visit and that I have reviewed
+            these notes for clinical accuracy before saving.
+          </span>
+        </label>
+      </div>
       <div class="session-actions">
-        <button id="saveNotesBtn" type="button" class="btn btn-primary">Save notes</button>
+        <button id="saveNotesBtn" type="button" class="btn btn-primary" disabled>Save notes</button>
         <button id="downloadAudioBtn" type="button" class="btn btn-secondary">Download audio</button>
         <button id="downloadTextBtn" type="button" class="btn btn-secondary">Download transcript</button>
         <button id="startNewRecordingBtn" type="button" class="btn btn-primary hidden">Start new recording</button>

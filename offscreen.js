@@ -68,9 +68,10 @@ let tabVideoSamplerEl = null;
 /** @type {Uint8ClampedArray | null} */
 let lastTabFrameData = null;
 
-/** @type {{ pageHint: 'AUDIO' | 'VIDEO' | null, tabSamples: number, tabVideoHits: number }} */
+/** @type {{ pageHint: 'AUDIO' | 'VIDEO' | null, forced: 'AUDIO' | 'VIDEO' | null, tabSamples: number, tabVideoHits: number }} */
 let visitModalityState = {
   pageHint: null,
+  forced: null,
   tabSamples: 0,
   tabVideoHits: 0,
 };
@@ -328,26 +329,42 @@ async function cleanup() {
 }
 
 /**
- * Request microphone access. Surfaces permission-denied errors clearly.
+ * Request microphone access with constraints tuned for clinical speech.
+ * Records doctor audio clearly while tab audio is monitored for the call.
  */
 async function getMicrophoneStream() {
+  const audioConstraints = {
+    channelCount: 1,
+    echoCancellation: true,
+    // Noise suppression often eats medical speech; prefer auto-gain instead.
+    noiseSuppression: false,
+    autoGainControl: true,
+  };
+
   try {
-    return await navigator.mediaDevices.getUserMedia({ audio: true });
+    return await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
   } catch (err) {
-    const name = err instanceof DOMException ? err.name : 'Error';
-    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    // Fall back to default constraints if the browser rejects advanced options.
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (fallbackErr) {
+      const name = fallbackErr instanceof DOMException ? fallbackErr.name : 'Error';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        throw new Error(
+          'Microphone permission denied in the recorder. Close and reopen the extension popup, ' +
+            'click Start Recording, then Allow in the Chrome dialog.'
+        );
+      }
+      if (name === 'NotFoundError') {
+        throw new Error('No microphone found. Connect a mic and try again.');
+      }
+      if (name === 'NotReadableError') {
+        throw new Error('Microphone is in use by another app. Close other apps and try again.');
+      }
       throw new Error(
-        'Microphone permission denied in the recorder. Close and reopen the extension popup, ' +
-          'click Start Recording, then Allow in the Chrome dialog.'
+        `Microphone error: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`
       );
     }
-    if (name === 'NotFoundError') {
-      throw new Error('No microphone found. Connect a mic and try again.');
-    }
-    if (name === 'NotReadableError') {
-      throw new Error('Microphone is in use by another app. Close other apps and try again.');
-    }
-    throw new Error(`Microphone error: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -399,6 +416,7 @@ async function getTabCaptureStream(streamId) {
 function resetVisitModalityState(pageHint = null) {
   visitModalityState = {
     pageHint: pageHint === 'VIDEO' ? 'VIDEO' : pageHint === 'AUDIO' ? 'AUDIO' : null,
+    forced: null,
     tabSamples: 0,
     tabVideoHits: 0,
   };
@@ -493,6 +511,10 @@ function startTabVideoSampling(videoTrack) {
 }
 
 function resolveVisitModality() {
+  if (visitModalityState.forced === 'VIDEO' || visitModalityState.forced === 'AUDIO') {
+    return visitModalityState.forced;
+  }
+
   if (visitModalityState.pageHint === 'VIDEO') {
     return 'VIDEO';
   }
@@ -514,14 +536,14 @@ function resolveVisitModality() {
 
 /**
  * Build the Web Audio mixing graph and start recorders on mixed + per-source streams.
- * @param {{ streamId: string }} payload
+ * @param {{ streamId: string, pageVisitModality?: 'AUDIO' | 'VIDEO' | null }} payload
  */
 async function startRecording(payload) {
   if (isRecording) {
     return { ok: false, error: 'Recording is already in progress.' };
   }
 
-  const { streamId, pageVisitModality } = payload || {};
+  const { streamId, pageVisitModality, forcedVisitModality } = payload || {};
   if (!streamId) {
     return { ok: false, error: 'Missing tab capture stream ID.' };
   }
@@ -536,16 +558,27 @@ async function startRecording(payload) {
       tabVideoTrack.readyState !== 'ended' &&
       tabVideoTrack.enabled !== false;
 
-    // Tab capture includes video — don't lock to early page DOM "audio" (Meet/Zoom timing).
+    // Prefer clinician-selected visit type when provided.
+    const forced =
+      forcedVisitModality === 'VIDEO' || forcedVisitModality === 'AUDIO'
+        ? forcedVisitModality
+        : null;
     const pageHint =
-      pageVisitModality === 'VIDEO'
+      forced ??
+      (pageVisitModality === 'VIDEO'
         ? 'VIDEO'
         : tabCapturesVideo
           ? null
-          : pageVisitModality ?? null;
+          : pageVisitModality ?? null);
     resetVisitModalityState(pageHint);
+    if (forced) {
+      visitModalityState.forced = forced;
+    }
 
-    if (tabVideoTrack) {
+    if (tabVideoTrack && !forced) {
+      startTabVideoSampling(tabVideoTrack);
+    } else if (tabVideoTrack && forced === 'VIDEO') {
+      // Keep sampling optional for diagnostics, but forced VIDEO wins at resolve time.
       startTabVideoSampling(tabVideoTrack);
     }
 
@@ -554,6 +587,9 @@ async function startRecording(payload) {
     }
 
     audioContext = new AudioContext();
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+    }
     mixDestination = audioContext.createMediaStreamDestination();
     micOnlyDestination = audioContext.createMediaStreamDestination();
     tabOnlyDestination = audioContext.createMediaStreamDestination();
@@ -561,24 +597,41 @@ async function startRecording(payload) {
     micSourceNode = audioContext.createMediaStreamSource(micStream);
     tabSourceNode = audioContext.createMediaStreamSource(tabStream);
 
+    // Boost doctor mic slightly before mix/monitor paths.
+    const micGainNode = audioContext.createGain();
+    micGainNode.gain.value = 2.0;
+    micSourceNode.connect(micGainNode);
+
+    // Soften tab monitor volume so echo cancellation is less likely to erase the doctor's voice.
+    const tabMonitorGain = audioContext.createGain();
+    tabMonitorGain.gain.value = 0.85;
+    tabSourceNode.connect(tabMonitorGain);
+
     // Combined recording (saved .webm).
-    micSourceNode.connect(mixDestination);
+    micGainNode.connect(mixDestination);
     tabSourceNode.connect(mixDestination);
 
     // Per-source recordings for separate transcription.
-    micSourceNode.connect(micOnlyDestination);
+    // Doctor track: record the raw mic MediaStream (higher fidelity than Web Audio destination).
+    micGainNode.connect(micOnlyDestination);
     tabSourceNode.connect(tabOnlyDestination);
 
     // Restore tab monitoring (tabCapture mutes normal output).
-    tabSourceNode.connect(audioContext.destination);
+    tabMonitorGain.connect(audioContext.destination);
 
     recordedChunks = [];
     micRecordedChunks = [];
     tabRecordedChunks = [];
 
-    mediaRecorder = new MediaRecorder(mixDestination.stream, { mimeType: MIME_TYPE });
-    micRecorder = new MediaRecorder(micOnlyDestination.stream, { mimeType: MIME_TYPE });
-    tabRecorder = new MediaRecorder(tabOnlyDestination.stream, { mimeType: MIME_TYPE });
+    const recorderOptions = { mimeType: MIME_TYPE, audioBitsPerSecond: 128000 };
+    mediaRecorder = new MediaRecorder(mixDestination.stream, recorderOptions);
+    // Prefer raw mic tracks for doctor ASR accuracy.
+    try {
+      micRecorder = new MediaRecorder(micStream, recorderOptions);
+    } catch {
+      micRecorder = new MediaRecorder(micOnlyDestination.stream, recorderOptions);
+    }
+    tabRecorder = new MediaRecorder(tabOnlyDestination.stream, recorderOptions);
 
     attachChunkCollector(mediaRecorder, recordedChunks);
     attachChunkCollector(micRecorder, micRecordedChunks);
@@ -593,10 +646,77 @@ async function startRecording(payload) {
     mediaRecorder.start(timesliceMs);
     micRecorder.start(timesliceMs);
     tabRecorder.start(timesliceMs);
+
     isRecording = true;
     isPaused = false;
 
     return { ok: true, visitModality: resolveVisitModality() };
+  } catch (err) {
+    await cleanup();
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+}
+
+/**
+ * Mic-only dictation for addendum / separate documentation (no tab capture).
+ */
+async function startDictationRecording() {
+  if (isRecording) {
+    return { ok: false, error: 'Recording is already in progress.' };
+  }
+
+  try {
+    micStream = await getMicrophoneStream();
+    resetVisitModalityState('AUDIO');
+
+    if (!MediaRecorder.isTypeSupported(MIME_TYPE)) {
+      throw new Error(`MediaRecorder does not support ${MIME_TYPE} on this browser.`);
+    }
+
+    audioContext = new AudioContext();
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+    }
+    mixDestination = audioContext.createMediaStreamDestination();
+    micOnlyDestination = audioContext.createMediaStreamDestination();
+
+    micSourceNode = audioContext.createMediaStreamSource(micStream);
+    const micGainNode = audioContext.createGain();
+    micGainNode.gain.value = 2.0;
+    micSourceNode.connect(micGainNode);
+    micGainNode.connect(mixDestination);
+    micGainNode.connect(micOnlyDestination);
+
+    recordedChunks = [];
+    micRecordedChunks = [];
+    tabRecordedChunks = [];
+
+    const recorderOptions = { mimeType: MIME_TYPE, audioBitsPerSecond: 128000 };
+    mediaRecorder = new MediaRecorder(mixDestination.stream, recorderOptions);
+    try {
+      micRecorder = new MediaRecorder(micStream, recorderOptions);
+    } catch {
+      micRecorder = new MediaRecorder(micOnlyDestination.stream, recorderOptions);
+    }
+    tabRecorder = null;
+
+    attachChunkCollector(mediaRecorder, recordedChunks);
+    attachChunkCollector(micRecorder, micRecordedChunks);
+
+    mediaRecorder.onerror = (event) => {
+      console.error('[offscreen] Dictation MediaRecorder error:', event);
+      reportError('MediaRecorder encountered an error during dictation.');
+    };
+
+    const timesliceMs = 1000;
+    mediaRecorder.start(timesliceMs);
+    micRecorder.start(timesliceMs);
+
+    isRecording = true;
+    isPaused = false;
+
+    return { ok: true, visitModality: 'AUDIO', dictation: true };
   } catch (err) {
     await cleanup();
     const message = err instanceof Error ? err.message : String(err);
@@ -725,6 +845,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.type) {
       case 'start-recording':
         return startRecording(message.data);
+      case 'start-dictation':
+        return startDictationRecording();
       case 'pause-recording':
         return pauseRecording();
       case 'resume-recording':

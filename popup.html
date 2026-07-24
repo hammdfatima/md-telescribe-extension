@@ -19,14 +19,55 @@
 
     <section id="authPanel" class="card auth-panel">
       <div id="authLoginForm">
-        <h2 class="card-title">Sign in</h2>
-        <label for="loginEmail">Email</label>
-        <input id="loginEmail" type="email" autocomplete="email" placeholder="you@clinic.com" />
-        <label for="loginPassword">Password</label>
-        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Your password" />
-        <div class="auth-actions">
-          <button id="loginBtn" type="button" class="btn btn-primary">Sign in</button>
-          <button id="signupLinkBtn" type="button" class="btn btn-secondary">Create account</button>
+        <div id="authCredentialsStep">
+          <h2 class="card-title">Sign in</h2>
+          <label for="loginEmail">Email</label>
+          <input id="loginEmail" type="email" autocomplete="email" placeholder="you@clinic.com" />
+          <label for="loginPassword">Password</label>
+          <div class="password-field">
+            <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Your password" />
+            <button
+              id="togglePasswordBtn"
+              type="button"
+              class="password-toggle"
+              aria-label="Show password"
+              title="Show password"
+            >
+              <svg class="password-icon-show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+              <svg class="password-icon-hide hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"></path>
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"></path>
+                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"></path>
+                <line x1="1" y1="1" x2="23" y2="23"></line>
+              </svg>
+            </button>
+          </div>
+          <div class="auth-actions">
+            <button id="loginBtn" type="button" class="btn btn-primary">Sign in</button>
+            <button id="signupLinkBtn" type="button" class="btn btn-secondary">Create account</button>
+          </div>
+        </div>
+
+        <div id="authMfaStep" class="hidden">
+          <h2 class="card-title">Two-factor authentication</h2>
+          <p class="mfa-help">Enter the 6-digit code from your authenticator app.</p>
+          <label for="mfaCodeInput">Authentication code</label>
+          <input
+            id="mfaCodeInput"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="6"
+            placeholder="000000"
+            spellcheck="false"
+          />
+          <div class="auth-actions">
+            <button id="verifyMfaBtn" type="button" class="btn btn-primary">Verify &amp; sign in</button>
+            <button id="cancelMfaBtn" type="button" class="btn btn-ghost">Back</button>
+          </div>
         </div>
       </div>
 
@@ -54,22 +95,35 @@
     </section>
 
     <div id="recordingSection">
-      <p id="autoDetectHint" class="auto-detect-hint">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10"></circle>
-          <path d="M12 16v-4"></path>
-          <path d="M12 8h.01"></path>
-        </svg>
-        <span>Visit type is detected automatically from your telemedicine tab (audio-only vs camera).</span>
+      <h2 id="visitTypeHeading" class="visit-type-heading">Choose the visit type</h2>
+
+      <div id="visitStartRow" class="visit-start-row">
+        <button id="startVideoBtn" type="button" class="btn btn-primary visit-start-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="6" width="14" height="12" rx="2"></rect>
+            <path d="m22 8-4 3v2l4 3V8z"></path>
+          </svg>
+          <span class="visit-start-label">
+            <strong>Video visit</strong>
+            <small>Camera is on</small>
+          </span>
+        </button>
+        <button id="startAudioBtn" type="button" class="btn btn-secondary visit-start-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 16.92v2a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 1h2a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.35a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.75.32 1.54.55 2.35.68A2 2 0 0 1 22 16.92z"></path>
+          </svg>
+          <span class="visit-start-label">
+            <strong>Audio visit</strong>
+            <small>Camera is off / phone</small>
+          </span>
+        </button>
+      </div>
+
+      <p id="autoDetectHint" class="visit-type-help">
+        Use <strong>Video visit</strong> when the camera is on. Use <strong>Audio visit</strong> for camera-off or phone calls. Wear headphones for clearer doctor transcription.
       </p>
 
-      <div id="recordingButtons" class="buttons">
-        <button id="startBtn" type="button" class="btn btn-primary">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <circle cx="12" cy="12" r="8"></circle>
-          </svg>
-          Start recording
-        </button>
+      <div id="recordingButtons" class="buttons recording-controls hidden">
         <button id="pauseBtn" type="button" class="btn btn-secondary" disabled>
           <svg id="pauseBtnIcon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <rect x="6" y="5" width="4" height="14" rx="1"></rect>
@@ -107,7 +161,7 @@
           <input id="notesConsentCheckbox" type="checkbox" />
           <span>
             I confirm the patient consented to recording this visit and that I have reviewed
-            these notes for clinical accuracy before saving.
+            these notes for clinical accuracy. Copy and save are available only after this confirmation.
           </span>
         </label>
       </div>
@@ -115,14 +169,14 @@
         <button id="saveNotesBtn" type="button" class="btn btn-primary" disabled>Save notes</button>
         <button id="downloadAudioBtn" type="button" class="btn btn-secondary">Download audio</button>
         <button id="downloadTextBtn" type="button" class="btn btn-secondary">Download transcript</button>
-        <button id="startNewRecordingBtn" type="button" class="btn btn-primary hidden">Start new recording</button>
+        <button id="startNewRecordingBtn" type="button" class="btn btn-primary hidden">Start new visit</button>
         <button id="dismissSessionBtn" type="button" class="btn btn-ghost">Dismiss</button>
       </div>
       <p id="saveStatus" class="save-status"></p>
     </section>
 
     <p class="footer-hint">
-      Built for <strong>2-person</strong> calls. Stop recording to save audio and generate clinical notes on the server.
+      Pick <strong>Video visit</strong> or <strong>Audio visit</strong>, then stop recording to generate clinical notes.
     </p>
   </div>
 

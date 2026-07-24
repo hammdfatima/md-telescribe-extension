@@ -147,6 +147,29 @@ function notifyPopup(type, data) {
   chrome.runtime.sendMessage({ type, target: 'popup', data }).catch(() => {});
 }
 
+/**
+ * OS notification when the extension popup may be closed.
+ * @param {{ id?: string, title: string, message: string }} options
+ */
+function showOsNotification({ id, title, message }) {
+  if (!chrome.notifications?.create) {
+    return;
+  }
+
+  const notificationId = id || `mdts-${Date.now()}`;
+  try {
+    chrome.notifications.create(notificationId, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title,
+      message,
+      priority: 2,
+    });
+  } catch (err) {
+    console.warn('[background] showOsNotification failed:', err);
+  }
+}
+
 function dataUrlToArrayBuffer(dataUrl) {
   const base64 = dataUrl.split(',')[1];
   const binary = atob(base64);
@@ -184,6 +207,279 @@ async function getRecordingState() {
 async function setRecordingState(state) {
   await chrome.storage.session.set({ recordingState: state });
 }
+
+function isRestrictedTabUrl(url) {
+  if (!url) return true;
+  const restrictedPrefixes = [
+    'chrome://',
+    'chrome-extension://',
+    'edge://',
+    'about:',
+    'devtools://',
+    'view-source:',
+  ];
+  return restrictedPrefixes.some((prefix) => url.startsWith(prefix));
+}
+
+async function openExtensionUi() {
+  try {
+    if (chrome.action?.openPopup) {
+      await chrome.action.openPopup();
+      return { opened: 'popup' };
+    }
+  } catch (err) {
+    console.warn('[background] openPopup failed, falling back to window:', err);
+  }
+
+  return openExtensionUiNearToolbar();
+}
+
+/** Fallback when toolbar popup cannot be opened — place near the top-right (extension icons). */
+async function openExtensionUiNearToolbar() {
+  const current = await chrome.windows
+    .getLastFocused({ windowTypes: ['normal'] })
+    .catch(() => null);
+
+  const width = 420;
+  const height = 680;
+  let left = 80;
+  let top = 80;
+
+  if (current) {
+    left = Math.max(0, (current.left ?? 0) + (current.width ?? 1280) - width - 24);
+    top = Math.max(0, (current.top ?? 0) + 72);
+  }
+
+  await chrome.windows.create({
+    url: chrome.runtime.getURL('popup.html'),
+    type: 'popup',
+    width,
+    height,
+    left,
+    top,
+    focused: true,
+  });
+  return { opened: 'window' };
+}
+
+/**
+ * After the capture bridge finishes, close it and open the normal toolbar popup.
+ * @param {{ launcherTabId?: number, launcherWindowId?: number }} data
+ */
+async function finishMeetingLaunch(data = {}) {
+  const { launcherTabId, launcherWindowId } = data;
+
+  if (launcherTabId) {
+    try {
+      await chrome.tabs.remove(launcherTabId);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  if (launcherWindowId) {
+    try {
+      await chrome.windows.remove(launcherWindowId);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  // Give Chrome a beat so openPopup is not blocked by the bridge window/tab.
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  return openExtensionUi();
+}
+
+async function getTabStreamId(tabId, allowRetry = true) {
+  try {
+    return await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    if (allowRetry && message.toLowerCase().includes('active stream')) {
+      await releaseTabCapture();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return getTabStreamId(tabId, false);
+    }
+
+    if (message.toLowerCase().includes('active stream')) {
+      throw new Error(
+        'This tab is still locked from a previous recording. Click Stop Recording, reload the page, or try again.'
+      );
+    }
+
+    throw err;
+  }
+}
+
+/**
+ * Shared path used by the toolbar popup and the in-meeting prompt.
+ * @param {{ tabId: number, streamId: string, forcedVisitModality: 'AUDIO' | 'VIDEO' }} params
+ */
+async function beginTabRecording({ tabId, streamId, forcedVisitModality }) {
+  pendingRecordingFiles = null;
+  invalidateProcessing();
+
+  const state = await getRecordingState();
+  if (state === 'starting' || state === 'recording' || state === 'paused' || state === 'stopping') {
+    return { ok: false, error: 'Recording is already in progress. Click Stop Recording first.' };
+  }
+
+  await setRecordingState('starting');
+
+  try {
+    const normalizedModality = forcedVisitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
+    const pageVisitModality =
+      normalizedModality || (await detectVisitModalityFromTab(tabId));
+    await chrome.storage.session.set({
+      recordingTabId: tabId ?? null,
+      pageVisitModality,
+      detectedVisitModality: pageVisitModality,
+      forcedVisitModality: normalizedModality,
+    });
+
+    await ensureOffscreenDocument();
+    const result = await sendToOffscreen('start-recording', {
+      streamId,
+      tabId,
+      pageVisitModality,
+      forcedVisitModality: normalizedModality,
+    });
+
+    if (result?.ok) {
+      await setRecordingState('recording');
+      const detectedVisitModality =
+        normalizedModality ?? mergeVisitModality(pageVisitModality, result.visitModality);
+      await chrome.storage.session.set({
+        detectedVisitModality,
+        forcedVisitModality: normalizedModality,
+      });
+      await chrome.storage.local.set({
+        recording: true,
+        recordingPaused: false,
+        processing: false,
+        syncError: null,
+        pendingVisitModality: null,
+        pendingMeetingStart: null,
+      });
+      wakeBackend().catch(() => {});
+      return {
+        ...result,
+        visitModality:
+          normalizedModality ?? mergeVisitModality(pageVisitModality, result.visitModality),
+      };
+    }
+
+    await setRecordingState('idle');
+    return result;
+  } catch (err) {
+    await setRecordingState('idle');
+    throw err;
+  }
+}
+
+/**
+ * Open the extension from the in-page meeting prompt (no auto-start).
+ * Visit type is chosen inside the extension UI.
+ * @param {{ tabId?: number }} data
+ */
+async function openExtensionFromMeeting(data, senderTabId) {
+  const tabId = data?.tabId ?? senderTabId;
+
+  if (!tabId) {
+    return { ok: false, error: 'No meeting tab found. Focus the call tab and try again.' };
+  }
+
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab?.id || isRestrictedTabUrl(tab.url || '')) {
+    return {
+      ok: false,
+      error: 'This tab cannot be captured. Stay on the meeting page and try again.',
+    };
+  }
+
+  // Remember which meeting tab to capture when the user picks Video/Audio in the popup.
+  await chrome.storage.session.set({
+    preferredMeetingTabId: tabId,
+    preferredMeetingTabAt: Date.now(),
+  });
+
+  dismissMeetingPromptOnTab(tabId).catch(() => {});
+
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } catch {
+    // Extension UI can still open without focusing the tab.
+  }
+
+  await openExtensionUiNearToolbar();
+  return { ok: true, opened: true };
+}
+
+/**
+ * Start recording from the in-page meeting prompt, then open the extension UI.
+ * @deprecated Prefer openExtensionFromMeeting — visit type is chosen in the popup.
+ * @param {{ tabId?: number, forcedVisitModality?: 'AUDIO' | 'VIDEO' }} data
+ */
+async function startRecordingFromMeeting(data, senderTabId) {
+  return openExtensionFromMeeting(data, senderTabId);
+}
+
+/**
+ * Opens the normal extension UI near the toolbar for the meeting tab.
+ * @param {{ tabId: number, forcedVisitModality?: 'AUDIO' | 'VIDEO' }} params
+ */
+async function openMeetingAutostartUi({ tabId }) {
+  return openExtensionFromMeeting({ tabId }, tabId);
+}
+
+/**
+ * @deprecated Kept for older pending mic-resume paths.
+ */
+async function openCaptureLauncher({ tabId, forcedVisitModality }) {
+  return openExtensionFromMeeting({ tabId }, tabId);
+}
+
+async function dismissMeetingPromptOnTab(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      target: 'meeting-prompt',
+      type: 'dismiss',
+    });
+  } catch {
+    // Tab may not have the content script (or was closed).
+  }
+}
+
+async function resumePendingMeetingStart() {
+  const { pendingMeetingStart, micPermissionReady } = await chrome.storage.local.get([
+    'pendingMeetingStart',
+    'micPermissionReady',
+  ]);
+
+  if (!pendingMeetingStart?.tabId || !micPermissionReady) {
+    return;
+  }
+
+  await chrome.storage.local.remove('pendingMeetingStart');
+
+  try {
+    await openExtensionFromMeeting({ tabId: pendingMeetingStart.tabId }, pendingMeetingStart.tabId);
+  } catch (err) {
+    notifyPopup(
+      'recording-error',
+      err instanceof Error ? err.message : String(err)
+    );
+  }
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.micPermissionReady?.newValue === true) {
+    void resumePendingMeetingStart();
+  }
+});
 
 async function setProcessingStage(stage) {
   await chrome.storage.local.set({ processingStage: stage });
@@ -248,6 +544,11 @@ async function finishNotesSession(meetingId, note, visitModality, filename) {
     'detectedVisitModality',
   ]);
   notifyPopup('notes-ready', session);
+  showOsNotification({
+    id: `note-ready-${meetingId}`,
+    title: 'Clinical note ready',
+    message: 'Your telemedicine encounter note is ready. Open md telescribe to review it.',
+  });
 }
 
 /**
@@ -292,15 +593,20 @@ async function runProcessStoppedRecording(payload) {
 
     await wakeBackend().catch(() => {});
 
-    const { detectedVisitModality, pageVisitModality } = await chrome.storage.session.get([
-      'detectedVisitModality',
-      'pageVisitModality',
-    ]);
-    visitModality = resolveRecordingVisitModality({
-      detectedVisitModality,
-      pageVisitModality,
-      stopSignal: payload.visitModality,
-    });
+    const { detectedVisitModality, pageVisitModality, forcedVisitModality } =
+      await chrome.storage.session.get([
+        'detectedVisitModality',
+        'pageVisitModality',
+        'forcedVisitModality',
+      ]);
+    visitModality =
+      forcedVisitModality === 'VIDEO' || forcedVisitModality === 'AUDIO'
+        ? forcedVisitModality
+        : resolveRecordingVisitModality({
+            detectedVisitModality,
+            pageVisitModality,
+            stopSignal: payload.visitModality,
+          });
 
     const meeting = await createMeeting(
       payload.filename.replace(/\.webm$/, ''),
@@ -380,6 +686,14 @@ async function runProcessStoppedRecording(payload) {
       syncError: backendError,
     });
     notifyPopup('processing-error', { error: backendError, session });
+    showOsNotification({
+      id: `note-failed-${Date.now()}`,
+      title: 'Could not generate notes',
+      message:
+        typeof backendError === 'string'
+          ? backendError.slice(0, 180)
+          : 'Open md telescribe to retry or check your connection.',
+    });
   }
 }
 
@@ -442,6 +756,67 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const handle = async () => {
     switch (message.type) {
       case 'start-recording': {
+        try {
+          const forcedVisitModality =
+            message.data?.forcedVisitModality === 'VIDEO'
+              ? 'VIDEO'
+              : message.data?.forcedVisitModality === 'AUDIO'
+                ? 'AUDIO'
+                : 'AUDIO';
+
+          if (!message.data?.streamId || !message.data?.tabId) {
+            return { ok: false, error: 'Missing tab capture stream. Focus a meeting tab and try again.' };
+          }
+
+          return await beginTabRecording({
+            tabId: message.data.tabId,
+            streamId: message.data.streamId,
+            forcedVisitModality,
+          });
+        } catch (err) {
+          await setRecordingState('idle');
+          throw err;
+        }
+      }
+
+      case 'start-recording-from-meeting': {
+        return startRecordingFromMeeting(message.data || {}, _sender.tab?.id);
+      }
+
+      case 'open-extension-from-meeting': {
+        return openExtensionFromMeeting(message.data || {}, _sender.tab?.id);
+      }
+
+      case 'get-recording-state': {
+        const state = await getRecordingState();
+        const { recording, recordingPaused } = await chrome.storage.local.get([
+          'recording',
+          'recordingPaused',
+        ]);
+        return {
+          ok: true,
+          recording: Boolean(recording) || state === 'recording' || state === 'paused',
+          busy:
+            state === 'starting' ||
+            state === 'recording' ||
+            state === 'paused' ||
+            state === 'stopping',
+          recordingPaused: Boolean(recordingPaused) || state === 'paused',
+          recordingState: state,
+        };
+      }
+
+      case 'open-extension-ui': {
+        await openExtensionUi();
+        return { ok: true };
+      }
+
+      case 'finish-meeting-launch': {
+        await finishMeetingLaunch(message.data || {});
+        return { ok: true };
+      }
+
+      case 'start-dictation': {
         pendingRecordingFiles = null;
         invalidateProcessing();
 
@@ -453,27 +828,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await setRecordingState('starting');
 
         try {
-          const pageVisitModality = await detectVisitModalityFromTab(message.data?.tabId);
           await chrome.storage.session.set({
-            recordingTabId: message.data?.tabId ?? null,
-            pageVisitModality,
-            detectedVisitModality: pageVisitModality,
+            recordingTabId: null,
+            pageVisitModality: 'AUDIO',
+            detectedVisitModality: 'AUDIO',
           });
 
           await ensureOffscreenDocument();
-          const result = await sendToOffscreen('start-recording', {
-            ...message.data,
-            pageVisitModality,
-          });
+          const result = await sendToOffscreen('start-dictation', {});
 
           if (result?.ok) {
             await setRecordingState('recording');
-            const detectedVisitModality = mergeVisitModality(
-              pageVisitModality,
-              result.visitModality,
-            );
             await chrome.storage.session.set({
-              detectedVisitModality,
+              detectedVisitModality: 'AUDIO',
             });
             await chrome.storage.local.set({
               recording: true,
@@ -482,17 +849,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               syncError: null,
             });
             wakeBackend().catch(() => {});
-          } else {
-            await setRecordingState('idle');
+            return { ...result, visitModality: 'AUDIO' };
           }
 
-          if (result?.ok) {
-            return {
-              ...result,
-              visitModality: mergeVisitModality(pageVisitModality, result.visitModality),
-            };
-          }
-
+          await setRecordingState('idle');
           return result;
         } catch (err) {
           await setRecordingState('idle');
@@ -785,6 +1145,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'auth-login': {
         try {
           const data = await login(message.data || {});
+          if (data?.requiresMfa && data?.mfaToken) {
+            return {
+              ok: false,
+              code: 'MFA_REQUIRED',
+              mfaToken: data.mfaToken,
+              error: 'Enter the 6-digit code from your authenticator app.',
+            };
+          }
+          if (!data?.accessToken) {
+            return { ok: false, error: 'Sign in failed. No access token returned.' };
+          }
+
+          const session = await getExtensionSession();
+          return { ok: true, data: session };
+        } catch (err) {
+          if (err instanceof ApiClientError) {
+            return { ok: false, error: err.message, code: err.code };
+          }
+          throw err;
+        }
+      }
+
+      case 'auth-verify-mfa': {
+        try {
+          await verifyMfaLogin({
+            mfaToken: message.data?.mfaToken,
+            code: message.data?.code,
+          });
           const session = await getExtensionSession();
           return { ok: true, data: session };
         } catch (err) {
@@ -805,11 +1193,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const session = await getExtensionSession();
           return { ok: true, data: session };
         } catch (err) {
-          if (err instanceof ApiClientError && err.code === 'AUTH_REQUIRED') {
+          // Only clear the stored token on real auth failures — not network/cold-start blips.
+          if (isAuthFailure(err)) {
+            await logout();
             return { ok: false, code: 'AUTH_REQUIRED' };
           }
+
+          const cached = await getCachedAuthUiSession();
+          if (cached?.user) {
+            return { ok: true, data: cached, stale: true };
+          }
+
           if (err instanceof ApiClientError) {
-            await logout();
             return { ok: false, error: err.message, code: err.code };
           }
           throw err;
@@ -853,3 +1248,10 @@ chrome.runtime.onMessage.addListener((message) => {
     chrome.storage.session.set({ recordingState: 'idle' });
   }
 });
+
+if (chrome.notifications?.onClicked) {
+  chrome.notifications.onClicked.addListener((notificationId) => {
+    chrome.notifications.clear(notificationId).catch(() => {});
+    void openExtensionUi();
+  });
+}

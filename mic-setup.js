@@ -3,6 +3,7 @@ const statusEl = document.getElementById('status');
 
 const params = new URLSearchParams(window.location.search);
 const shouldAutoStart = params.get('autostart') === '1';
+const fromMeeting = params.get('fromMeeting') === '1';
 
 function setStatus(text, type = '') {
   statusEl.textContent = text;
@@ -15,13 +16,25 @@ async function requestMicrophone() {
 
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: false,
+        autoGainControl: true,
+      },
+    });
     const storageUpdate = { micPermissionReady: true };
-    if (shouldAutoStart) {
+    if (shouldAutoStart && !fromMeeting) {
       storageUpdate.pendingStartRecording = true;
     }
     await chrome.storage.local.set(storageUpdate);
-    setStatus('Microphone allowed. You can close this tab and start recording.', 'ok');
+    setStatus(
+      fromMeeting
+        ? 'Microphone allowed. Returning to your meeting — recording will start shortly.'
+        : 'Microphone allowed. You can close this tab and start recording.',
+      'ok'
+    );
     allowBtn.textContent = 'Done — close this tab';
 
     setTimeout(() => window.close(), 1200);

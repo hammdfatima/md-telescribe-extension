@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Starting recording — md telescribe</title>
+  <link rel="stylesheet" href="extension-ui.css" />
+  <style>
+    .launcher-page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .launcher-card {
+      width: min(360px, 100%);
+      padding: 20px;
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
+    }
+    .launcher-card h1 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .launcher-card p {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    .launcher-card .error {
+      margin-top: 12px;
+    }
+    .launcher-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+  </style>
+</head>
+<body class="launcher-page">
+  <div class="launcher-card">
+    <header class="brand-header" style="padding: 0 0 12px;">
+      <img src="icons/logo.png" alt="md telescribe" class="brand-logo-full" style="height: 36px;" />
+    </header>
+    <h1 id="title">Starting recording…</h1>
+    <p id="status">Capturing your meeting tab. Keep this window open for a moment.</p>
+    <div id="error" class="error" role="alert"></div>
+    <div id="actions" class="launcher-actions" hidden>
+      <button id="retryBtn" type="button" class="btn btn-primary">Try again</button>
+      <button id="closeBtn" type="button" class="btn btn-ghost">Close</button>
+    </div>
+  </div>
+  <script src="capture-launcher.js"></script>
+</body>
+</html>

@@ -5,6 +5,9 @@
 
 const API_TIMEOUT_MS = 120_000;
 const API_WAKE_TIMEOUT_MS = 90_000;
+/** Keep extension sign-in for at least one day (matches access JWT lifetime). */
+const AUTH_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const AUTH_UI_CACHE_KEY = 'authUiCache';
 
 class ApiClientError extends Error {
   /**
@@ -19,6 +22,13 @@ class ApiClientError extends Error {
   }
 }
 
+function isAuthFailure(err) {
+  return (
+    err instanceof ApiClientError &&
+    (err.status === 401 || err.code === 'AUTH_REQUIRED' || err.code === 'UNAUTHORIZED')
+  );
+}
+
 async function getStoredAuthSession() {
   const stored = await chrome.storage.local.get(AUTH_STORAGE_KEY);
   return stored[AUTH_STORAGE_KEY] ?? null;
@@ -26,16 +36,77 @@ async function getStoredAuthSession() {
 
 async function setStoredAuthSession(session) {
   if (!session) {
-    await chrome.storage.local.remove(AUTH_STORAGE_KEY);
+    await chrome.storage.local.remove([AUTH_STORAGE_KEY, AUTH_UI_CACHE_KEY]);
     return;
   }
 
   await chrome.storage.local.set({ [AUTH_STORAGE_KEY]: session });
 }
 
+async function cacheAuthUiSession(session) {
+  if (!session?.user) {
+    return;
+  }
+
+  await chrome.storage.local.set({
+    [AUTH_UI_CACHE_KEY]: {
+      user: session.user,
+      usage: session.usage ?? null,
+      cachedAt: Date.now(),
+    },
+  });
+
+  const existing = await getStoredAuthSession();
+  if (existing?.accessToken) {
+    await setStoredAuthSession({
+      ...existing,
+      user: session.user,
+      usage: session.usage ?? existing.usage ?? null,
+    });
+  }
+}
+
+async function getCachedAuthUiSession() {
+  const auth = await getStoredAuthSession();
+  if (!auth?.accessToken) {
+    return null;
+  }
+
+  if (auth.expiresAt && Date.now() > auth.expiresAt) {
+    return null;
+  }
+
+  const stored = await chrome.storage.local.get(AUTH_UI_CACHE_KEY);
+  const cache = stored[AUTH_UI_CACHE_KEY];
+  if (cache?.user) {
+    return {
+      user: cache.user,
+      usage: cache.usage ?? auth.usage ?? null,
+    };
+  }
+
+  if (auth.user) {
+    return {
+      user: auth.user,
+      usage: auth.usage ?? null,
+    };
+  }
+
+  return null;
+}
+
 async function getAccessToken() {
   const session = await getStoredAuthSession();
-  return session?.accessToken ?? null;
+  if (!session?.accessToken) {
+    return null;
+  }
+
+  if (session.expiresAt && Date.now() > session.expiresAt) {
+    await setStoredAuthSession(null);
+    return null;
+  }
+
+  return session.accessToken;
 }
 
 /**
@@ -151,11 +222,55 @@ async function login(credentials) {
     method: 'POST',
     body: JSON.stringify(credentials),
     auth: false,
+    timeoutMs: API_WAKE_TIMEOUT_MS,
+    retries: 1,
   });
+
+  // MFA pending responses have no access token — do not wipe/replace a good session.
+  if (data?.requiresMfa || !data?.accessToken) {
+    return data;
+  }
 
   await setStoredAuthSession({
     accessToken: data.accessToken,
     user: data.user,
+    usage: null,
+    expiresAt: Date.now() + AUTH_SESSION_TTL_MS,
+    signedInAt: Date.now(),
+  });
+
+  return data;
+}
+
+/**
+ * Complete MFA login with the 6-digit authenticator code.
+ * @param {{ mfaToken: string, code: string }} payload
+ */
+async function verifyMfaLogin(payload) {
+  const data = await apiRequest('/auth/mfa/verify-login', {
+    method: 'POST',
+    body: JSON.stringify({
+      mfaToken: payload.mfaToken,
+      code: String(payload.code || '').trim(),
+    }),
+    auth: false,
+    timeoutMs: API_WAKE_TIMEOUT_MS,
+    retries: 1,
+  });
+
+  if (!data?.accessToken) {
+    throw new ApiClientError('MFA verification failed. No access token returned.', {
+      status: 401,
+      code: 'AUTH_REQUIRED',
+    });
+  }
+
+  await setStoredAuthSession({
+    accessToken: data.accessToken,
+    user: data.user,
+    usage: null,
+    expiresAt: Date.now() + AUTH_SESSION_TTL_MS,
+    signedInAt: Date.now(),
   });
 
   return data;
@@ -166,7 +281,13 @@ async function logout() {
 }
 
 async function getExtensionSession() {
-  return apiRequest('/auth/extension-session', { method: 'GET' });
+  const session = await apiRequest('/auth/extension-session', {
+    method: 'GET',
+    timeoutMs: API_WAKE_TIMEOUT_MS,
+    retries: 2,
+  });
+  await cacheAuthUiSession(session);
+  return session;
 }
 
 function getSignupUrl() {

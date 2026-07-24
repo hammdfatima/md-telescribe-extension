@@ -17,6 +17,15 @@ function detectVisitModalityInPage() {
     const hasLayout = rect.width >= MIN_VIDEO_PX && rect.height >= MIN_VIDEO_PX;
     const hasDecodedFrames =
       video.videoWidth >= MIN_VIDEO_PX && video.videoHeight >= MIN_VIDEO_PX;
+    // Prefer live camera feeds over decorative paused tiles.
+    const isLive =
+      !video.paused &&
+      !video.ended &&
+      video.readyState >= 2 &&
+      video.videoWidth >= MIN_VIDEO_PX;
+    if (isLive && (hasLayout || hasDecodedFrames)) {
+      return true;
+    }
     // Telehealth UIs often keep decorative <video> paused; decoded dimensions are the signal.
     if (hasDecodedFrames && (hasLayout || video.readyState >= 2)) {
       return true;

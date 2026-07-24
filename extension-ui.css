@@ -175,6 +175,22 @@ body {
   50% { opacity: 0.45; transform: scale(0.92); }
 }
 
+.visit-type-heading {
+  margin: 0 0 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--foreground);
+  letter-spacing: -0.01em;
+}
+
+.visit-type-help {
+  margin: 12px 0 14px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground, #6b7280);
+}
+
 .auto-detect-hint {
   display: flex;
   gap: 10px;
@@ -221,6 +237,57 @@ body {
   outline: none;
   border-color: rgba(55, 125, 236, 0.55);
   box-shadow: 0 0 0 3px rgba(55, 125, 236, 0.12);
+}
+
+.password-field {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.password-field input {
+  margin-bottom: 0;
+  padding-right: 42px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.password-toggle:hover {
+  color: var(--foreground);
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.password-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.mfa-help {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+#mfaCodeInput {
+  letter-spacing: 0.28em;
+  font-weight: 600;
+  text-align: center;
 }
 
 .auth-user-bar {
@@ -272,6 +339,59 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.visit-start-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.recording-controls {
+  margin-top: 12px;
+}
+
+.visit-start-btn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.visit-start-btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.visit-start-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.visit-start-label strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.visit-start-label small {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.btn-primary .visit-start-label small {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.btn-secondary .visit-start-label small {
+  color: #4b5563;
 }
 
 .consent-row {

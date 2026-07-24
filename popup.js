@@ -4,7 +4,8 @@
 
 const statusEl = document.getElementById('status');
 const statusTextEl = document.getElementById('statusText');
-const startBtn = document.getElementById('startBtn');
+const startVideoBtn = document.getElementById('startVideoBtn');
+const startAudioBtn = document.getElementById('startAudioBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const pauseBtnLabel = document.getElementById('pauseBtnLabel');
 const pauseBtnIcon = document.getElementById('pauseBtnIcon');
@@ -33,6 +34,12 @@ const authUserEmailEl = document.getElementById('authUserEmail');
 const usageHintEl = document.getElementById('usageHint');
 const loginEmailEl = document.getElementById('loginEmail');
 const loginPasswordEl = document.getElementById('loginPassword');
+const togglePasswordBtn = document.getElementById('togglePasswordBtn');
+const authCredentialsStepEl = document.getElementById('authCredentialsStep');
+const authMfaStepEl = document.getElementById('authMfaStep');
+const mfaCodeInputEl = document.getElementById('mfaCodeInput');
+const verifyMfaBtn = document.getElementById('verifyMfaBtn');
+const cancelMfaBtn = document.getElementById('cancelMfaBtn');
 const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const signupLinkBtn = document.getElementById('signupLinkBtn');
@@ -43,6 +50,9 @@ const userAvatarEl = document.getElementById('userAvatar');
 
 /** @type {{ user: { email: string, name?: string | null }, usage: { freeNotesRemaining: number, freeNotesLimit: number, hasActiveSubscription: boolean, canGenerateNotes: boolean, subscribeUrl: string } } | null} */
 let authSession = null;
+
+/** Pending MFA token after password succeeds on a 2FA account. */
+let pendingMfaToken = null;
 
 /** @type {'idle' | 'recording' | 'paused' | 'saving' | 'syncing' | 'uploading' | 'generating' | 'ready' | 'notes' | 'saved'} */
 let uiState = 'idle';
@@ -113,16 +123,22 @@ function setAutoDetectHint(modality) {
     return;
   }
 
-  const textEl = autoDetectHintEl.querySelector('span') || autoDetectHintEl;
   const defaultText =
-    'Visit type is detected automatically from your telemedicine tab (audio-only vs camera).';
+    'Use Video visit when the camera is on. Use Audio visit for camera-off or phone calls. Wear headphones for clearer doctor transcription.';
 
   if (!modality) {
-    textEl.textContent = defaultText;
+    autoDetectHintEl.innerHTML = defaultText
+      .replace('Video visit', '<strong>Video visit</strong>')
+      .replace('Audio visit', '<strong>Audio visit</strong>');
     return;
   }
 
-  textEl.textContent = `${formatDetectedVisitLabel(modality)} — clinical notes will use the matching template.`;
+  autoDetectHintEl.textContent = `Recording as ${formatDetectedVisitLabel(modality).toLowerCase()} — clinical notes will use the matching template.`;
+}
+
+function setVisitStartButtonsDisabled(disabled) {
+  if (startVideoBtn) startVideoBtn.disabled = disabled;
+  if (startAudioBtn) startAudioBtn.disabled = disabled;
 }
 
 function updateAuthUI() {
@@ -139,8 +155,10 @@ function updateAuthUI() {
     if (userAvatarEl) {
       userAvatarEl.textContent = getUserInitials(authSession.user);
     }
-    if (authSession.usage.hasActiveSubscription) {
-      usageHintEl.textContent = 'Subscription active — unlimited note generation.';
+    if (!authSession.usage) {
+      usageHintEl.textContent = 'Signed in - reconnecting...';
+    } else if (authSession.usage.hasActiveSubscription) {
+      usageHintEl.textContent = 'Subscription active - unlimited note generation.';
     } else {
       usageHintEl.textContent = `${authSession.usage.freeNotesRemaining} of ${authSession.usage.freeNotesLimit} free notes remaining.`;
     }
@@ -180,12 +198,18 @@ async function handleLogin() {
   loginBtn.disabled = true;
   try {
     const response = await sendToBackground('auth-login', { email, password });
+    if (response?.code === 'MFA_REQUIRED' && response?.mfaToken) {
+      showMfaStep(response.mfaToken);
+      setStatus('idle', 'Enter authenticator code');
+      return;
+    }
     if (!response?.ok) {
       throw new Error(response?.error || 'Sign in failed.');
     }
 
     authSession = response.data;
     loginPasswordEl.value = '';
+    hideMfaStep();
     updateAuthUI();
     setStatus('idle', 'Signed in');
   } catch (err) {
@@ -195,9 +219,71 @@ async function handleLogin() {
   }
 }
 
+function showMfaStep(mfaToken) {
+  pendingMfaToken = mfaToken;
+  showError('');
+  authCredentialsStepEl?.classList.add('hidden');
+  authMfaStepEl?.classList.remove('hidden');
+  if (mfaCodeInputEl) {
+    mfaCodeInputEl.value = '';
+    mfaCodeInputEl.focus();
+  }
+}
+
+function hideMfaStep() {
+  pendingMfaToken = null;
+  authMfaStepEl?.classList.add('hidden');
+  authCredentialsStepEl?.classList.remove('hidden');
+  if (mfaCodeInputEl) {
+    mfaCodeInputEl.value = '';
+  }
+}
+
+async function handleVerifyMfa() {
+  showError('');
+  const code = (mfaCodeInputEl?.value || '').replace(/\D/g, '');
+
+  if (!pendingMfaToken) {
+    hideMfaStep();
+    showError('Sign-in session expired. Enter your email and password again.');
+    return;
+  }
+
+  if (code.length !== 6) {
+    showError('Enter the 6-digit code from your authenticator app.');
+    return;
+  }
+
+  if (verifyMfaBtn) verifyMfaBtn.disabled = true;
+  try {
+    const response = await sendToBackground('auth-verify-mfa', {
+      mfaToken: pendingMfaToken,
+      code,
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || 'Invalid MFA code.');
+    }
+
+    authSession = response.data;
+    if (loginPasswordEl) loginPasswordEl.value = '';
+    hideMfaStep();
+    updateAuthUI();
+    setStatus('idle', 'Signed in');
+  } catch (err) {
+    showError(err instanceof Error ? err.message : String(err));
+    if (mfaCodeInputEl) {
+      mfaCodeInputEl.focus();
+      mfaCodeInputEl.select();
+    }
+  } finally {
+    if (verifyMfaBtn) verifyMfaBtn.disabled = false;
+  }
+}
+
 async function handleLogout() {
   await sendToBackground('auth-logout');
   authSession = null;
+  hideMfaStep();
   updateAuthUI();
   hideSession();
   setStatus('idle', 'Signed out');
@@ -269,9 +355,11 @@ function setNotesViewMode(mode) {
   notesContentEl.classList.toggle('hidden', !isEditing);
   notesDisplayEl.classList.toggle('hidden', isEmpty || isEditing);
   notesDisplayEl.classList.toggle('readonly', isReadonly);
-  copyNotesBtn.classList.toggle('hidden', !isReadonly);
+  // Show copy whenever notes exist (edit or readonly); consent still gates the action.
+  copyNotesBtn.classList.toggle('hidden', isEmpty);
 
   notesContentEl.readOnly = !isEditing;
+  updateCopyNotesEnabled();
 }
 
 function renderNotesDisplay(content) {
@@ -279,6 +367,11 @@ function renderNotesDisplay(content) {
 }
 
 async function copyNotesToClipboard() {
+  if (!notesConsentCheckbox?.checked) {
+    showError('Please confirm you have reviewed these notes before copying.');
+    return;
+  }
+
   const content =
     currentSession?.note?.content ||
     notesPlainText(notesDisplayEl.textContent || notesContentEl.value || '');
@@ -300,6 +393,29 @@ async function copyNotesToClipboard() {
   } catch {
     showError('Could not copy notes. Try selecting the text manually.');
   }
+}
+
+function updateCopyNotesEnabled() {
+  if (!copyNotesBtn) return;
+  const hasContent = Boolean(
+    (
+      currentSession?.note?.content ||
+      notesContentEl?.value ||
+      notesDisplayEl?.textContent ||
+      ''
+    ).trim(),
+  );
+  const consented = Boolean(notesConsentCheckbox?.checked);
+  const isVisible = !copyNotesBtn.classList.contains('hidden');
+  copyNotesBtn.disabled = !isVisible || !hasContent || !consented;
+}
+
+function blockUnverifiedNotesClipboard(event) {
+  if (notesConsentCheckbox?.checked) {
+    return;
+  }
+  event.preventDefault();
+  showError('Please confirm you have reviewed these notes before copying.');
 }
 
 function setPauseButton(paused) {
@@ -336,11 +452,20 @@ function setStatus(state, message) {
   };
 
   statusTextEl.textContent = message || labels[state];
-  startBtn.disabled = ['recording', 'paused', 'saving', 'syncing', 'uploading', 'generating'].includes(
+  const startDisabled = ['recording', 'paused', 'saving', 'syncing', 'uploading', 'generating'].includes(
     state,
   );
-  stopBtn.disabled = !['recording', 'paused'].includes(state);
-  pauseBtn.disabled = !['recording', 'paused'].includes(state);
+  setVisitStartButtonsDisabled(startDisabled);
+  const visitStartRow = document.getElementById('visitStartRow');
+  const visitTypeHeading = document.getElementById('visitTypeHeading');
+  const isActivelyRecording = ['recording', 'paused'].includes(state);
+  const hideChooser = startDisabled && state !== 'idle';
+  visitStartRow?.classList.toggle('hidden', hideChooser);
+  visitTypeHeading?.classList.toggle('hidden', hideChooser);
+  autoDetectHintEl?.classList.toggle('hidden', hideChooser);
+  recordingButtonsEl?.classList.toggle('hidden', !isActivelyRecording);
+  stopBtn.disabled = !isActivelyRecording;
+  pauseBtn.disabled = !isActivelyRecording;
   setPauseButton(state === 'paused');
 }
 
@@ -352,6 +477,7 @@ function updateSaveNotesEnabled() {
   const consented = Boolean(notesConsentCheckbox?.checked);
 
   saveNotesBtn.disabled = !canSave || !consented;
+  updateCopyNotesEnabled();
 }
 
 function updateSessionButtons() {
@@ -363,11 +489,21 @@ function updateSessionButtons() {
   const hasText = Boolean(currentSession?.files?.hasText);
   const showSave = hasNote && !notesSaved && !processingNotes;
 
-  recordingButtonsEl.classList.toggle('hidden', hasSession);
+  recordingButtonsEl.classList.toggle(
+    'hidden',
+    hasSession || !['recording', 'paused'].includes(uiState),
+  );
+  const visitStartRow = document.getElementById('visitStartRow');
+  const visitTypeHeading = document.getElementById('visitTypeHeading');
+  visitStartRow?.classList.toggle('hidden', hasSession);
+  visitTypeHeading?.classList.toggle('hidden', hasSession);
+  autoDetectHintEl?.classList.toggle('hidden', hasSession);
   sessionPanel.classList.toggle('visible', hasSession);
 
-  notesConsentRow?.classList.toggle('hidden', !showSave);
-  if (!showSave && notesConsentCheckbox) {
+  // Keep consent visible whenever notes exist so copy cannot bypass verification.
+  const showConsent = hasNote && !processingNotes;
+  notesConsentRow?.classList.toggle('hidden', !showConsent);
+  if (!showConsent && notesConsentCheckbox) {
     notesConsentCheckbox.checked = false;
   }
 
@@ -871,7 +1007,39 @@ function isRestrictedTabUrl(url) {
   return restrictedPrefixes.some((prefix) => url.startsWith(prefix));
 }
 
-async function startRecording() {
+async function ensureCapturePermissionForUrl(url) {
+  if (!url || isRestrictedTabUrl(url) || !chrome.permissions?.request) {
+    return;
+  }
+
+  try {
+    const originPattern = `${new URL(url).origin}/*`;
+    const already = await chrome.permissions.contains({ origins: [originPattern] });
+    if (already) {
+      return;
+    }
+
+    const granted = await chrome.permissions.request({
+      origins: ['http://*/*', 'https://*/*'],
+    });
+    if (!granted) {
+      throw new Error(
+        'Allow md telescribe site access for this meeting page: chrome://extensions → md telescribe → Details → Site access → On all sites.'
+      );
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Site access')) {
+      throw err;
+    }
+  }
+}
+
+/**
+ * @param {'AUDIO' | 'VIDEO'} [forcedVisitModality]
+ * @param {{ tabId?: number }} [options]
+ */
+async function startRecording(forcedVisitModality = 'AUDIO', options = {}) {
+  const visitModality = forcedVisitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
   showError('');
   hideSession();
   updateSessionButtons();
@@ -885,7 +1053,7 @@ async function startRecording() {
       return;
     }
 
-    if (!session.usage.canGenerateNotes) {
+    if (!session.usage?.canGenerateNotes) {
       setStatus('idle', 'Subscription required');
       showError('You have used your free notes. Subscribe to continue generating clinical notes.');
       updateAuthUI();
@@ -907,22 +1075,62 @@ async function startRecording() {
       return;
     }
 
+    await chrome.storage.local.set({ pendingVisitModality: visitModality });
     await ensureMicrophonePermission();
-    setStatus('idle', 'Starting capture…');
+    setStatus('idle', `Starting ${visitModality === 'VIDEO' ? 'video' : 'audio'} visit…`);
 
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    /** @type {chrome.tabs.Tab | null} */
+    let tab = null;
+    if (!options.tabId) {
+      const stored = await chrome.storage.session.get(['preferredMeetingTabId', 'preferredMeetingTabAt']);
+      const preferredAgeMs = Date.now() - (stored.preferredMeetingTabAt || 0);
+      if (stored.preferredMeetingTabId && preferredAgeMs < 30 * 60 * 1000) {
+        options.tabId = stored.preferredMeetingTabId;
+      }
+    }
+    if (options.tabId) {
+      tab = await chrome.tabs.get(options.tabId).catch(() => null);
+      if (tab?.id) {
+        try {
+          await chrome.tabs.update(tab.id, { active: true });
+          if (tab.windowId != null) {
+            await chrome.windows.update(tab.windowId, { focused: true });
+          }
+        } catch {
+          // Continue — targetTabId capture can still work.
+        }
+      }
+    }
 
     if (!tab?.id) {
-      throw new Error('No active tab found. Focus a normal browser tab and try again.');
+      const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      tab = activeTab ?? null;
+    }
+
+    if (!tab?.id) {
+      throw new Error('No active tab found. Focus your meeting tab and try again.');
     }
 
     if (isRestrictedTabUrl(tab.url || '')) {
       throw new Error(
-        'This tab cannot be captured. Open a regular HTTPS page (e.g. meet.google.com) and try again.'
+        'This tab cannot be captured. Keep the Google Meet / Zoom tab focused and try again.'
       );
     }
 
-    const streamId = await getTabStreamId(tab.id);
+    await ensureCapturePermissionForUrl(tab.url || '');
+
+    let streamId;
+    try {
+      streamId = await getTabStreamId(tab.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes('activetab') || message.toLowerCase().includes('not been invoked')) {
+        throw new Error(
+          'Chrome blocked tab capture for this meeting. Open chrome://extensions → md telescribe → Details → Site access → On all sites, then try again from the meeting tab.'
+        );
+      }
+      throw err;
+    }
 
     if (!streamId) {
       throw new Error('Tab capture was denied or failed. Check extension permissions.');
@@ -931,25 +1139,63 @@ async function startRecording() {
     const response = await sendToBackground('start-recording', {
       streamId,
       tabId: tab.id,
+      forcedVisitModality: visitModality,
     });
 
     if (!response?.ok) {
       throw new Error(response?.error || 'Failed to start recording in offscreen document.');
     }
 
-    const detectedModality = response.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
-    setAutoDetectHint(detectedModality);
-    setStatus('recording', `Recording — ${formatDetectedVisitLabel(detectedModality).toLowerCase()}`);
-    scheduleVisitModalityRefresh();
-    await chrome.storage.local.set({ recording: true, processing: false, syncError: null });
+    setAutoDetectHint(visitModality);
+    setStatus(
+      'recording',
+      `Recording — ${visitModality === 'VIDEO' ? 'video visit' : 'audio visit'}`,
+    );
+    await chrome.storage.local.set({
+      recording: true,
+      processing: false,
+      syncError: null,
+      pendingVisitModality: null,
+    });
+    await chrome.storage.session.remove([
+      'pendingMeetingAutoStart',
+      'pendingMeetingCapture',
+      'preferredMeetingTabId',
+      'preferredMeetingTabAt',
+    ]);
   } catch (err) {
     console.error('[popup] startRecording failed:', err);
     setStatus('idle');
     setAutoDetectHint(null);
     showError(err instanceof Error ? err.message : String(err));
-    await chrome.storage.local.set({ recording: false, processing: false });
+    await chrome.storage.local.set({ recording: false, processing: false, pendingVisitModality: null });
     await chrome.storage.session.set({ recordingState: 'idle' });
   }
+}
+
+async function consumeMeetingAutostart() {
+  // Meeting prompt only opens the extension now. Visit type is chosen here.
+  const params = new URLSearchParams(window.location.search);
+  const tabId = Number(params.get('tabId'));
+  if (Number.isFinite(tabId) && tabId > 0) {
+    await chrome.storage.session.set({
+      preferredMeetingTabId: tabId,
+      preferredMeetingTabAt: Date.now(),
+    });
+  }
+
+  await chrome.storage.session.remove(['pendingMeetingAutoStart', 'pendingMeetingCapture']);
+
+  if (params.get('autostartMeeting') === '1') {
+    try {
+      window.history.replaceState({}, '', chrome.runtime.getURL('popup.html'));
+    } catch {
+      // Ignore history errors in extension pages.
+    }
+    setStatus('idle', 'Choose Video visit or Audio visit to start');
+  }
+
+  return false;
 }
 
 async function pauseOrResumeRecording() {
@@ -1000,7 +1246,7 @@ async function stopRecording() {
   clearVisitModalityRefreshTimers();
   showError('');
   setStatus('saving', 'Finishing recording…');
-  startBtn.disabled = true;
+  setVisitStartButtonsDisabled(true);
   pauseBtn.disabled = true;
   stopBtn.disabled = true;
 
@@ -1031,9 +1277,12 @@ async function stopRecording() {
     clearProcessingWatchdog();
     stopProcessingKeepAlive();
   } finally {
-    startBtn.disabled = ['recording', 'paused', 'saving', 'syncing', 'generating'].includes(uiState);
-    stopBtn.disabled = !['recording', 'paused'].includes(uiState);
-    pauseBtn.disabled = !['recording', 'paused'].includes(uiState);
+    const isActivelyRecording = ['recording', 'paused'].includes(uiState);
+    const startDisabled = ['recording', 'paused', 'saving', 'syncing', 'generating'].includes(uiState);
+    setVisitStartButtonsDisabled(startDisabled);
+    recordingButtonsEl?.classList.toggle('hidden', !isActivelyRecording);
+    stopBtn.disabled = !isActivelyRecording;
+    pauseBtn.disabled = !isActivelyRecording;
     setPauseButton(uiState === 'paused');
   }
 }
@@ -1209,11 +1458,38 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
   }
 
+  if (changes.recording?.newValue === true) {
+    chrome.storage.session.get(
+      ['detectedVisitModality', 'forcedVisitModality', 'recordingState'],
+      ({ detectedVisitModality, forcedVisitModality, recordingState }) => {
+        if (recordingState === 'paused') {
+          setStatus('paused', 'Recording paused — click Resume to continue');
+          return;
+        }
+        const modality = forcedVisitModality || detectedVisitModality;
+        setStatus(
+          'recording',
+          modality
+            ? `Recording — ${formatDetectedVisitLabel(modality).toLowerCase()}`
+            : 'Recording',
+        );
+        setAutoDetectHint(modality === 'VIDEO' || modality === 'AUDIO' ? modality : null);
+        showError('');
+      }
+    );
+  }
+
+  if (changes.recording?.newValue === false && !changes.processing?.newValue) {
+    if (uiState === 'recording' || uiState === 'paused') {
+      setStatus('idle');
+    }
+  }
+
   if (changes.micPermissionReady?.newValue === true && changes.pendingStartRecording?.newValue === true) {
     chrome.storage.local.remove('pendingStartRecording');
-    chrome.storage.local.get(['recording'], ({ recording }) => {
+    chrome.storage.local.get(['recording', 'pendingVisitModality'], ({ recording, pendingVisitModality }) => {
       if (!recording) {
-        startRecording();
+        startRecording(pendingVisitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO');
       }
     });
   }
@@ -1288,16 +1564,47 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-startBtn.addEventListener('click', startRecording);
+startVideoBtn?.addEventListener('click', () => startRecording('VIDEO'));
+startAudioBtn?.addEventListener('click', () => startRecording('AUDIO'));
+notesContentEl?.addEventListener('copy', blockUnverifiedNotesClipboard);
+notesContentEl?.addEventListener('cut', blockUnverifiedNotesClipboard);
+notesDisplayEl?.addEventListener('copy', blockUnverifiedNotesClipboard);
+notesDisplayEl?.addEventListener('cut', blockUnverifiedNotesClipboard);
 pauseBtn.addEventListener('click', pauseOrResumeRecording);
 stopBtn.addEventListener('click', stopRecording);
 loginBtn.addEventListener('click', handleLogin);
 logoutBtn.addEventListener('click', handleLogout);
 signupLinkBtn.addEventListener('click', openSignupPage);
 subscribeBtn.addEventListener('click', () => openSubscribePage());
+verifyMfaBtn?.addEventListener('click', () => {
+  void handleVerifyMfa();
+});
+cancelMfaBtn?.addEventListener('click', () => {
+  hideMfaStep();
+  showError('');
+  setStatus('idle', 'Sign in required');
+});
+togglePasswordBtn?.addEventListener('click', () => {
+  if (!loginPasswordEl) return;
+  const showing = loginPasswordEl.type === 'text';
+  loginPasswordEl.type = showing ? 'password' : 'text';
+  togglePasswordBtn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+  togglePasswordBtn.setAttribute('title', showing ? 'Show password' : 'Hide password');
+  togglePasswordBtn.querySelector('.password-icon-show')?.classList.toggle('hidden', !showing);
+  togglePasswordBtn.querySelector('.password-icon-hide')?.classList.toggle('hidden', showing);
+});
 loginPasswordEl?.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     void handleLogin();
+  }
+});
+mfaCodeInputEl?.addEventListener('input', () => {
+  if (!mfaCodeInputEl) return;
+  mfaCodeInputEl.value = mfaCodeInputEl.value.replace(/\D/g, '').slice(0, 6);
+});
+mfaCodeInputEl?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    void handleVerifyMfa();
   }
 });
 saveNotesBtn.addEventListener('click', saveNotes);
@@ -1305,7 +1612,13 @@ notesConsentCheckbox?.addEventListener('change', updateSaveNotesEnabled);
 copyNotesBtn.addEventListener('click', copyNotesToClipboard);
 downloadAudioBtn.addEventListener('click', () => downloadRecordingFile('audio'));
 downloadTextBtn.addEventListener('click', () => downloadRecordingFile('text'));
-startNewRecordingBtn.addEventListener('click', startRecording);
+startNewRecordingBtn.addEventListener('click', () => {
+  hideSession();
+  showError('');
+  setAutoDetectHint(null);
+  setStatus('idle', 'Choose Video visit or Audio visit to start');
+  void restoreRecordingStatusFromStorage();
+});
 dismissSessionBtn.addEventListener('click', () => {
   hideSession();
   showError('');
@@ -1314,4 +1627,11 @@ dismissSessionBtn.addEventListener('click', () => {
 
 updateSessionButtons();
 setAutoDetectHint(null);
-void refreshAuthSession().then(() => restoreFromStorage());
+void refreshAuthSession().then(async () => {
+  restoreFromStorage();
+  try {
+    await consumeMeetingAutostart();
+  } catch (err) {
+    console.error('[popup] meeting autostart failed:', err);
+  }
+});

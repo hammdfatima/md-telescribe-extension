@@ -1,0 +1,190 @@
+#mdts-meeting-prompt-root {
+  all: initial;
+  position: fixed;
+  z-index: 2147483646;
+  top: 16px;
+  right: 16px;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  pointer-events: none;
+}
+
+#mdts-meeting-prompt-root * {
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+#mdts-meeting-prompt-root .mdts-card {
+  pointer-events: auto;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px;
+  border-radius: 16px;
+  background: #ffffff;
+  color: #1c2434;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+}
+
+#mdts-meeting-prompt-root .mdts-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+#mdts-meeting-prompt-root .mdts-close {
+  appearance: none;
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+}
+
+#mdts-meeting-prompt-root .mdts-close:hover {
+  background: #f1f5f9;
+  color: #1c2434;
+}
+
+#mdts-meeting-prompt-root .mdts-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+#mdts-meeting-prompt-root .mdts-brand img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+#mdts-meeting-prompt-root .mdts-brand span {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #1c2434;
+}
+
+#mdts-meeting-prompt-root .mdts-brand span em {
+  font-style: normal;
+  color: #377dec;
+}
+
+#mdts-meeting-prompt-root .mdts-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #1c2434;
+}
+
+#mdts-meeting-prompt-root .mdts-body {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+#mdts-meeting-prompt-root .mdts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#mdts-meeting-prompt-root .mdts-btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+#mdts-meeting-prompt-root .mdts-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+#mdts-meeting-prompt-root .mdts-btn-primary {
+  flex: 1 1 auto;
+  background: #377dec;
+  color: #ffffff;
+}
+
+#mdts-meeting-prompt-root .mdts-btn-primary:hover:not(:disabled) {
+  background: #2f6ad0;
+}
+
+#mdts-meeting-prompt-root .mdts-btn-secondary {
+  flex: 1 1 auto;
+  background: #e8f1fd;
+  color: #1e4a8c;
+}
+
+#mdts-meeting-prompt-root .mdts-btn-secondary:hover:not(:disabled) {
+  background: #d7e7fb;
+}
+
+#mdts-meeting-prompt-root .mdts-btn-ghost {
+  background: transparent;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+
+#mdts-meeting-prompt-root .mdts-btn-ghost:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+#mdts-meeting-prompt-root .mdts-visit-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#mdts-meeting-prompt-root .mdts-visit-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 12px;
+  min-height: 64px;
+}
+
+#mdts-meeting-prompt-root .mdts-visit-btn strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#mdts-meeting-prompt-root .mdts-visit-btn small {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+#mdts-meeting-prompt-root .mdts-error {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#mdts-meeting-prompt-root .mdts-hidden {
+  display: none !important;
+}

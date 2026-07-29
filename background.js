@@ -412,8 +412,18 @@ async function openExtensionFromMeeting(data, senderTabId) {
     // Extension UI can still open without focusing the tab.
   }
 
-  await openExtensionUiNearToolbar();
-  return { ok: true, opened: true };
+  // Prefer the real toolbar popup. If Chrome blocks it (no user-gesture in the SW),
+  // ask the content script to show an in-page modal instead of a full window/tab.
+  try {
+    if (chrome.action?.openPopup) {
+      await chrome.action.openPopup();
+      return { ok: true, opened: 'popup' };
+    }
+  } catch (err) {
+    console.warn('[background] openPopup from meeting failed:', err);
+  }
+
+  return { ok: true, opened: 'modal' };
 }
 
 /**

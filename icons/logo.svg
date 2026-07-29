@@ -2,15 +2,15 @@
   <!-- Speech bubble with soundwave — matches md telescribe brand mark -->
   <path
     d="M32 8c-12.15 0-22 9.1-22 20.33 0 6.55 3.35 12.35 8.55 16.1v7.9c0 .9 1 1.4 1.7.85l8.2-6.05c1.15.2 2.35.3 3.55.3 12.15 0 22-9.1 22-20.33S44.15 8 32 8Z"
-    stroke="#377dec"
+    stroke="#10248a"
     stroke-width="3.2"
     stroke-linejoin="round"
   />
-  <rect x="22" y="24" width="3.2" height="10" rx="1.6" fill="#377dec"/>
-  <rect x="27.4" y="20" width="3.2" height="18" rx="1.6" fill="#377dec"/>
-  <rect x="32.8" y="17" width="3.2" height="24" rx="1.6" fill="#377dec"/>
-  <rect x="38.2" y="20" width="3.2" height="18" rx="1.6" fill="#377dec"/>
-  <rect x="43.6" y="24" width="3.2" height="10" rx="1.6" fill="#377dec"/>
-  <path d="M48 12l1.2 2.6L52 16l-2.8 1.4L48 20l-1.2-2.6L44 16l2.8-1.4L48 12Z" fill="#377dec"/>
-  <path d="M54 16l.85 1.85L57 19l-2.15 1.05L54 22l-.85-1.95L51 19l2.15-1.15L54 16Z" fill="#377dec"/>
+  <rect x="22" y="24" width="3.2" height="10" rx="1.6" fill="#10248a"/>
+  <rect x="27.4" y="20" width="3.2" height="18" rx="1.6" fill="#10248a"/>
+  <rect x="32.8" y="17" width="3.2" height="24" rx="1.6" fill="#10248a"/>
+  <rect x="38.2" y="20" width="3.2" height="18" rx="1.6" fill="#10248a"/>
+  <rect x="43.6" y="24" width="3.2" height="10" rx="1.6" fill="#10248a"/>
+  <path d="M48 12l1.2 2.6L52 16l-2.8 1.4L48 20l-1.2-2.6L44 16l2.8-1.4L48 12Z" fill="#10248a"/>
+  <path d="M54 16l.85 1.85L57 19l-2.15 1.05L54 22l-.85-1.95L51 19l2.15-1.15L54 16Z" fill="#10248a"/>
 </svg>

@@ -10,6 +10,7 @@
   window.__mdtsMeetingPromptLoaded = true;
 
   const ROOT_ID = 'mdts-meeting-prompt-root';
+  const PANEL_ROOT_ID = 'mdts-extension-panel-root';
   const DISMISS_PREFIX = 'mdts-meeting-prompt-dismissed:';
   const CHECK_INTERVAL_MS = 2500;
 
@@ -175,7 +176,7 @@
     rootEl.innerHTML = `
       <div class="mdts-card" role="dialog" aria-live="polite" aria-label="md telescribe meeting prompt">
         <div class="mdts-brand">
-          <img alt="" width="28" height="28" />
+          <img alt="" width="40" height="40" />
           <span>md <em>telescribe</em></span>
           <button type="button" class="mdts-close" data-action="close" aria-label="Close" title="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
@@ -202,7 +203,7 @@
 
     const logo = rootEl.querySelector('img');
     if (logo) {
-      logo.src = chrome.runtime.getURL('icons/icon48.png');
+      logo.src = chrome.runtime.getURL('icons/logo.png');
     }
 
     rootEl.addEventListener('click', onRootClick);
@@ -293,6 +294,11 @@
         return;
       }
 
+      // Toolbar popup when Chrome allows it; otherwise in-page extension modal.
+      if (response.opened !== 'popup') {
+        showExtensionPanelModal();
+      }
+
       dismissPromptPermanently();
     } catch (err) {
       showView('ask');
@@ -302,6 +308,46 @@
         button.disabled = false;
       }
     }
+  }
+
+  function closeExtensionPanelModal() {
+    const existing = document.getElementById(PANEL_ROOT_ID);
+    if (existing) {
+      existing.remove();
+    }
+  }
+
+  function showExtensionPanelModal() {
+    closeExtensionPanelModal();
+
+    const panel = document.createElement('div');
+    panel.id = PANEL_ROOT_ID;
+    panel.innerHTML = `
+      <div class="mdts-panel-backdrop" data-action="close-panel" aria-hidden="true"></div>
+      <div class="mdts-panel" role="dialog" aria-modal="true" aria-label="md telescribe">
+        <button type="button" class="mdts-panel-close" data-action="close-panel" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
+          </svg>
+        </button>
+        <iframe
+          title="md telescribe"
+          src="${chrome.runtime.getURL('popup.html')}"
+          allow="microphone"
+        ></iframe>
+      </div>
+    `;
+
+    panel.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-action="close-panel"]')) {
+        closeExtensionPanelModal();
+      }
+    });
+
+    document.documentElement.appendChild(panel);
   }
 
   async function maybeShowPrompt() {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "md telescribe",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "Record telemedicine visits and generate AI-powered SOAP notes with md telescribe.",
   "permissions": [
     "tabCapture",
@@ -11,8 +11,7 @@
     "offscreen",
     "downloads",
     "tabs",
-    "notifications",
-    "permissions"
+    "notifications"
   ],
   "host_permissions": [
     "https://huggingface.co/*",
@@ -21,10 +20,6 @@
     "https://mdtelescribe.com/*",
     "http://localhost:5000/*",
     "http://localhost:3000/*",
-    "http://*/*",
-    "https://*/*"
-  ],
-  "optional_host_permissions": [
     "http://*/*",
     "https://*/*"
   ],
@@ -49,7 +44,15 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icons/icon48.png", "icons/icon128.png", "icons/logo.png"],
+      "resources": [
+        "popup.html",
+        "popup.js",
+        "config.js",
+        "extension-ui.css",
+        "icons/icon48.png",
+        "icons/icon128.png",
+        "icons/logo.png"
+      ],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],

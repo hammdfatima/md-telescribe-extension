@@ -59,9 +59,10 @@
 }
 
 #mdts-meeting-prompt-root .mdts-brand img {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: contain;
 }
 
 #mdts-meeting-prompt-root .mdts-brand span {
@@ -75,7 +76,7 @@
 
 #mdts-meeting-prompt-root .mdts-brand span em {
   font-style: normal;
-  color: #0047b3;
+  color: #10248a;
 }
 
 #mdts-meeting-prompt-root .mdts-title {
@@ -118,7 +119,7 @@
 
 #mdts-meeting-prompt-root .mdts-btn-primary {
   flex: 1 1 auto;
-  background: #0047b3;
+  background: #10248a;
   color: #ffffff;
 }
 
@@ -129,7 +130,7 @@
 #mdts-meeting-prompt-root .mdts-btn-secondary {
   flex: 1 1 auto;
   background: #e8f1fd;
-  color: #1e4a8c;
+  color: #10248a;
 }
 
 #mdts-meeting-prompt-root .mdts-btn-secondary:hover:not(:disabled) {
@@ -187,4 +188,74 @@
 
 #mdts-meeting-prompt-root .mdts-hidden {
   display: none !important;
+}
+
+/* In-page extension panel (opened from "Yes, open extension") */
+#mdts-extension-panel-root {
+  all: initial;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#mdts-extension-panel-root * {
+  box-sizing: border-box;
+}
+
+#mdts-extension-panel-root .mdts-panel-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+#mdts-extension-panel-root .mdts-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: min(420px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 32px));
+  border-radius: 16px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.28);
+}
+
+#mdts-extension-panel-root .mdts-panel-close {
+  appearance: none;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #64748b;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+
+#mdts-extension-panel-root .mdts-panel-close:hover {
+  background: #f1f5f9;
+  color: #1c2434;
+}
+
+#mdts-extension-panel-root .mdts-panel-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+#mdts-extension-panel-root iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #f8fbff;
 }

@@ -75,7 +75,7 @@
 
 #mdts-meeting-prompt-root .mdts-brand span em {
   font-style: normal;
-  color: #377dec;
+  color: #0047b3;
 }
 
 #mdts-meeting-prompt-root .mdts-title {
@@ -118,7 +118,7 @@
 
 #mdts-meeting-prompt-root .mdts-btn-primary {
   flex: 1 1 auto;
-  background: #377dec;
+  background: #0047b3;
   color: #ffffff;
 }
 

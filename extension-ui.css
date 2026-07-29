@@ -1,6 +1,6 @@
 :root {
-  --brand-primary: #377dec;
-  --brand-primary-hover: #2f6ad0;
+  --brand-primary: #0047b3;
+  --brand-primary-hover: #003a94;
   --brand-primary-soft: #e8f1fd;
   --brand-secondary-foreground: #1e4a8c;
   --background: #f4f7fc;
@@ -418,7 +418,7 @@ body {
   width: 15px;
   height: 15px;
   flex-shrink: 0;
-  accent-color: var(--brand-primary, #377dec);
+  accent-color: var(--brand-primary, #0047b3);
   cursor: pointer;
 }
 

@@ -368,7 +368,7 @@ function renderNotesDisplay(content) {
 
 async function copyNotesToClipboard() {
   if (!notesConsentCheckbox?.checked) {
-    showError('Please confirm you have reviewed these notes before copying.');
+    showError('Please confirm patient recording consent and note review before copying.');
     return;
   }
 
@@ -415,7 +415,7 @@ function blockUnverifiedNotesClipboard(event) {
     return;
   }
   event.preventDefault();
-  showError('Please confirm you have reviewed these notes before copying.');
+  showError('Please confirm patient recording consent and note review before copying.');
 }
 
 function setPauseButton(paused) {
@@ -1333,7 +1333,7 @@ async function saveNotes() {
   }
 
   if (!notesConsentCheckbox?.checked) {
-    showError('Please confirm patient consent and note review before saving.');
+    showError('Please confirm patient recording consent and note review before saving.');
     return;
   }
 

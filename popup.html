@@ -154,17 +154,18 @@
           </svg>
         </button>
       </div>
-      <textarea id="notesContent" placeholder="Generated SOAP notes will appear here…"></textarea>
-      <div id="notesDisplay" class="notes-display hidden" aria-readonly="true"></div>
       <div id="notesConsentRow" class="consent-row hidden">
         <label class="consent-label" for="notesConsentCheckbox">
           <input id="notesConsentCheckbox" type="checkbox" />
           <span>
-            I confirm the patient consented to recording this visit and that I have reviewed
-            these notes for clinical accuracy. Copy and save are available only after this confirmation.
+            I confirm the patient consented to the audio recording of this medical encounter/visit
+            and I have personally reviewed the progress note in its entirety for documentation accuracy.
+            COPY &amp; SAVE are available ONLY after I acknowledge &amp; confirm this to be true.
           </span>
         </label>
       </div>
+      <textarea id="notesContent" placeholder="Generated SOAP notes will appear here…"></textarea>
+      <div id="notesDisplay" class="notes-display hidden" aria-readonly="true"></div>
       <div class="session-actions">
         <button id="saveNotesBtn" type="button" class="btn btn-primary" disabled>Save notes</button>
         <button id="downloadAudioBtn" type="button" class="btn btn-secondary">Download audio</button>

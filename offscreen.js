@@ -79,6 +79,12 @@ let visitModalityState = {
 /** Cached Whisper pipeline (downloaded once, ~40 MB first run). */
 let whisperPipeline = null;
 
+/** @type {AnalyserNode | null} */
+let micAnalyser = null;
+
+/** @type {ReturnType<typeof setInterval> | null} */
+let micLevelTimer = null;
+
 const MIME_TYPE = 'audio/webm;codecs=opus';
 // Two-person conversation: mic = doctor, tab/call audio = patient.
 const SPEAKER_DOCTOR = 'Doctor';
@@ -92,6 +98,109 @@ function reportError(text) {
   chrome.runtime
     .sendMessage({ type: 'offscreen-error', target: 'background', data: text })
     .catch(() => {});
+}
+
+/**
+ * Report live microphone level bars to the popup visualizer.
+ * @param {{ level: number, bars: number[] }} payload
+ */
+/** @type {{ level: number, bars: number[] }} */
+let latestMicLevel = { level: 0, bars: [0, 0, 0, 0, 0] };
+
+function reportMicLevel(payload) {
+  latestMicLevel = payload;
+  chrome.runtime
+    .sendMessage({ type: 'mic-level', target: 'background', data: payload })
+    .catch(() => {});
+}
+
+/**
+ * Start sampling mic amplitude for the popup level meter.
+ * @param {AudioNode} sourceNode
+ */
+function startMicLevelMeter(sourceNode) {
+  stopMicLevelMeter();
+  if (!audioContext || !sourceNode) {
+    return;
+  }
+
+  micAnalyser = audioContext.createAnalyser();
+  micAnalyser.fftSize = 512;
+  micAnalyser.minDecibels = -90;
+  micAnalyser.maxDecibels = -10;
+  micAnalyser.smoothingTimeConstant = 0.5;
+  sourceNode.connect(micAnalyser);
+
+  const timeData = new Uint8Array(micAnalyser.fftSize);
+  const freqData = new Uint8Array(micAnalyser.frequencyBinCount);
+  const barCount = 5;
+
+  const sampleLevels = () => {
+    if (!micAnalyser || !isRecording) {
+      return;
+    }
+
+    if (isPaused) {
+      reportMicLevel({ level: 0, bars: Array(barCount).fill(0) });
+      return;
+    }
+
+    micAnalyser.getByteTimeDomainData(timeData);
+    let sumSquares = 0;
+    let peak = 0;
+    for (let i = 0; i < timeData.length; i += 1) {
+      const sample = (timeData[i] - 128) / 128;
+      const abs = Math.abs(sample);
+      peak = Math.max(peak, abs);
+      sumSquares += sample * sample;
+    }
+    const rms = Math.sqrt(sumSquares / timeData.length);
+    // Aggressive boost so normal speaking clearly moves the bars.
+    const level = Math.min(1, Math.max(rms * 8, peak * 3.2));
+
+    micAnalyser.getByteFrequencyData(freqData);
+    const bars = [];
+    const bandSize = Math.max(1, Math.floor(freqData.length / barCount));
+    for (let i = 0; i < barCount; i += 1) {
+      let bandPeak = 0;
+      const start = i * bandSize;
+      const end = Math.min(freqData.length, start + bandSize);
+      for (let j = start; j < end; j += 1) {
+        bandPeak = Math.max(bandPeak, freqData[j]);
+      }
+      const freqLevel = bandPeak / 255;
+      const barLevel = Math.min(1, Math.max(level * (0.55 + i * 0.1), freqLevel * 1.35));
+      bars.push(barLevel);
+    }
+
+    reportMicLevel({ level, bars });
+  };
+
+  // Sample immediately so the first poll is not empty.
+  sampleLevels();
+  micLevelTimer = setInterval(sampleLevels, 50);
+}
+
+function stopMicLevelMeter() {
+  if (micLevelTimer) {
+    clearInterval(micLevelTimer);
+    micLevelTimer = null;
+  }
+
+  if (micAnalyser) {
+    try {
+      micAnalyser.disconnect();
+    } catch {
+      // ignore
+    }
+    micAnalyser = null;
+  }
+
+  latestMicLevel = { level: 0, bars: [0, 0, 0, 0, 0] };
+}
+
+function getMicLevel() {
+  return { ok: true, ...latestMicLevel };
 }
 
 /**
@@ -273,6 +382,8 @@ function finalizeRecorder(recorder, chunks, mimeType) {
  * Stop all tracks, disconnect nodes, and close the AudioContext.
  */
 async function cleanup() {
+  stopMicLevelMeter();
+
   mediaRecorder = null;
   micRecorder = null;
   tabRecorder = null;
@@ -414,9 +525,13 @@ async function getTabCaptureStream(streamId) {
 }
 
 function resetVisitModalityState(pageHint = null) {
+  const normalizedHint =
+    pageHint === 'VIDEO' || pageHint === 'AUDIO' || pageHint === 'IN_PERSON'
+      ? pageHint
+      : null;
   visitModalityState = {
-    pageHint: pageHint === 'VIDEO' ? 'VIDEO' : pageHint === 'AUDIO' ? 'AUDIO' : null,
-    forced: null,
+    pageHint: normalizedHint,
+    forced: normalizedHint === 'IN_PERSON' ? 'IN_PERSON' : null,
     tabSamples: 0,
     tabVideoHits: 0,
   };
@@ -511,8 +626,16 @@ function startTabVideoSampling(videoTrack) {
 }
 
 function resolveVisitModality() {
-  if (visitModalityState.forced === 'VIDEO' || visitModalityState.forced === 'AUDIO') {
+  if (
+    visitModalityState.forced === 'VIDEO' ||
+    visitModalityState.forced === 'AUDIO' ||
+    visitModalityState.forced === 'IN_PERSON'
+  ) {
     return visitModalityState.forced;
+  }
+
+  if (visitModalityState.pageHint === 'IN_PERSON') {
+    return 'IN_PERSON';
   }
 
   if (visitModalityState.pageHint === 'VIDEO') {
@@ -649,6 +772,7 @@ async function startRecording(payload) {
 
     isRecording = true;
     isPaused = false;
+    startMicLevelMeter(micGainNode);
 
     return { ok: true, visitModality: resolveVisitModality() };
   } catch (err) {
@@ -659,7 +783,7 @@ async function startRecording(payload) {
 }
 
 /**
- * Mic-only dictation for addendum / separate documentation (no tab capture).
+ * Mic-only recording for in-person / face-to-face visits (no tab capture).
  */
 async function startDictationRecording() {
   if (isRecording) {
@@ -668,7 +792,7 @@ async function startDictationRecording() {
 
   try {
     micStream = await getMicrophoneStream();
-    resetVisitModalityState('AUDIO');
+    resetVisitModalityState('IN_PERSON');
 
     if (!MediaRecorder.isTypeSupported(MIME_TYPE)) {
       throw new Error(`MediaRecorder does not support ${MIME_TYPE} on this browser.`);
@@ -705,8 +829,8 @@ async function startDictationRecording() {
     attachChunkCollector(micRecorder, micRecordedChunks);
 
     mediaRecorder.onerror = (event) => {
-      console.error('[offscreen] Dictation MediaRecorder error:', event);
-      reportError('MediaRecorder encountered an error during dictation.');
+      console.error('[offscreen] In-person MediaRecorder error:', event);
+      reportError('MediaRecorder encountered an error during in-person recording.');
     };
 
     const timesliceMs = 1000;
@@ -715,8 +839,9 @@ async function startDictationRecording() {
 
     isRecording = true;
     isPaused = false;
+    startMicLevelMeter(micGainNode);
 
-    return { ok: true, visitModality: 'AUDIO', dictation: true };
+    return { ok: true, visitModality: 'IN_PERSON', dictation: true };
   } catch (err) {
     await cleanup();
     const message = err instanceof Error ? err.message : String(err);
@@ -858,6 +983,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return stopRecording();
       case 'get-visit-modality':
         return { ok: true, visitModality: resolveVisitModality() };
+      case 'get-mic-level':
+        return getMicLevel();
       default:
         return { ok: false, error: `Unknown offscreen message: ${message.type}` };
     }

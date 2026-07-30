@@ -491,10 +491,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-async function setProcessingStage(stage) {
-  await chrome.storage.local.set({ processingStage: stage });
-}
-
 async function releaseTabCapture() {
   try {
     await ensureOffscreenDocument();
@@ -542,6 +538,7 @@ async function finishNotesSession(meetingId, note, visitModality, filename) {
     files: buildSessionFilesMeta(),
   };
 
+  await stopProcessingAlarm();
   await chrome.storage.local.set({
     pendingSession: session,
     processing: false,
@@ -557,13 +554,13 @@ async function finishNotesSession(meetingId, note, visitModality, filename) {
   showOsNotification({
     id: `note-ready-${meetingId}`,
     title: 'Clinical note ready',
-    message: 'Your telemedicine encounter note is ready. Open md telescribe to review it.',
+    message: 'Your encounter note is ready. Open md telescribe to review it.',
   });
 }
 
 /**
  * Upload audio and generate SOAP notes on the server (runs after popup is shown).
- * @param {{ audioBuffer: ArrayBuffer, filename: string, visitModality?: 'AUDIO' | 'VIDEO' }} payload
+ * @param {{ audioBuffer: ArrayBuffer, filename: string, visitModality?: 'AUDIO' | 'VIDEO' | 'IN_PERSON' }} payload
  */
 async function processStoppedRecording(payload) {
   if (processingRecordingPromise) {
@@ -578,7 +575,7 @@ async function processStoppedRecording(payload) {
 }
 
 /**
- * @param {{ audioBuffer: ArrayBuffer, micAudioBuffer?: ArrayBuffer | null, tabAudioBuffer?: ArrayBuffer | null, filename: string, visitModality?: 'AUDIO' | 'VIDEO' }} payload
+ * @param {{ audioBuffer: ArrayBuffer, micAudioBuffer?: ArrayBuffer | null, tabAudioBuffer?: ArrayBuffer | null, filename: string, visitModality?: 'AUDIO' | 'VIDEO' | 'IN_PERSON' }} payload
  */
 async function runProcessStoppedRecording(payload) {
   const epoch = processingEpoch;
@@ -610,7 +607,9 @@ async function runProcessStoppedRecording(payload) {
         'forcedVisitModality',
       ]);
     visitModality =
-      forcedVisitModality === 'VIDEO' || forcedVisitModality === 'AUDIO'
+      forcedVisitModality === 'VIDEO' ||
+      forcedVisitModality === 'AUDIO' ||
+      forcedVisitModality === 'IN_PERSON'
         ? forcedVisitModality
         : resolveRecordingVisitModality({
             detectedVisitModality,
@@ -629,13 +628,6 @@ async function runProcessStoppedRecording(payload) {
     await updatePendingSessionMeeting(meetingId, visitModality);
 
     await uploadMeetingAudio(meetingId, payload.audioBuffer, 'mixed');
-    if (payload.micAudioBuffer && payload.micAudioBuffer.byteLength >= 1024) {
-      await uploadMeetingAudio(meetingId, payload.micAudioBuffer, 'mic');
-    }
-    if (payload.tabAudioBuffer && payload.tabAudioBuffer.byteLength >= 1024) {
-      await uploadMeetingAudio(meetingId, payload.tabAudioBuffer, 'tab');
-    }
-    console.log('[background] uploaded audio bytes:', payload.audioBuffer.byteLength);
     await completeMeeting(meetingId);
 
     if (await isStale()) {
@@ -643,6 +635,22 @@ async function runProcessStoppedRecording(payload) {
     }
     await setProcessingStage('generating');
     notifyPopup('sync-status', { stage: 'generating' });
+
+    // Side-channel mic/tab uploads must not delay note generation.
+    // Notes use the mixed track (1 Whisper call) — same speed as in-person.
+    const sideUploads = [];
+    if (payload.micAudioBuffer && payload.micAudioBuffer.byteLength >= 1024) {
+      sideUploads.push(uploadMeetingAudio(meetingId, payload.micAudioBuffer, 'mic'));
+    }
+    if (payload.tabAudioBuffer && payload.tabAudioBuffer.byteLength >= 1024) {
+      sideUploads.push(uploadMeetingAudio(meetingId, payload.tabAudioBuffer, 'tab'));
+    }
+    if (sideUploads.length > 0) {
+      void Promise.all(sideUploads).catch((err) => {
+        console.warn('[background] side-channel audio upload failed:', err);
+      });
+    }
+    console.log('[background] uploaded audio bytes:', payload.audioBuffer.byteLength);
 
     const generated = await generateMeetingNotes(meetingId, visitModality);
     note = generated.note;
@@ -662,7 +670,7 @@ async function runProcessStoppedRecording(payload) {
 
     if (meetingId && !note) {
       try {
-        const recovered = await pollMeetingNote(meetingId, { timeoutMs: 45_000, intervalMs: 2000 });
+        const recovered = await pollMeetingNote(meetingId, { timeoutMs: 180_000, intervalMs: 2000 });
         if (await isStale()) {
           return;
         }
@@ -695,6 +703,7 @@ async function runProcessStoppedRecording(payload) {
       processingStage: null,
       syncError: backendError,
     });
+    await stopProcessingAlarm();
     notifyPopup('processing-error', { error: backendError, session });
     showOsNotification({
       id: `note-failed-${Date.now()}`,
@@ -704,6 +713,32 @@ async function runProcessStoppedRecording(payload) {
           ? backendError.slice(0, 180)
           : 'Open md telescribe to retry or check your connection.',
     });
+  }
+}
+
+/** Keep the service worker alive while notes are processing (MV3 can sleep mid-upload). */
+const PROCESSING_ALARM = 'mdts-processing-keepalive';
+
+async function startProcessingAlarm() {
+  try {
+    await chrome.alarms.create(PROCESSING_ALARM, { periodInMinutes: 0.5 });
+  } catch (err) {
+    console.warn('[background] processing alarm failed:', err);
+  }
+}
+
+async function stopProcessingAlarm() {
+  try {
+    await chrome.alarms.clear(PROCESSING_ALARM);
+  } catch {
+    // ignore
+  }
+}
+
+async function setProcessingStage(stage) {
+  await chrome.storage.local.set({ processing: true, processingStage: stage });
+  if (stage === 'uploading' || stage === 'generating' || stage === 'transcribing') {
+    await startProcessingAlarm();
   }
 }
 
@@ -720,19 +755,38 @@ async function recoverInterruptedProcessing() {
 
   if (pendingSession.meetingId) {
     try {
-      const recovered = await pollMeetingNote(pendingSession.meetingId, {
-        timeoutMs: 60_000,
-        intervalMs: 2000,
-      });
+      await setProcessingStage('generating');
+      // Resume generation — server may still be working, or the request never started.
+      const recovered = await generateMeetingNotes(
+        pendingSession.meetingId,
+        pendingSession.visitModality,
+      );
       await finishNotesSession(
         pendingSession.meetingId,
         recovered.note,
         recovered.visitModality ?? pendingSession.visitModality,
         pendingSession.files?.audioFilename || 'recording.webm',
       );
+      await stopProcessingAlarm();
       return;
     } catch (err) {
-      console.warn('[background] recoverInterruptedProcessing poll failed:', err);
+      console.warn('[background] recoverInterruptedProcessing resume failed:', err);
+      try {
+        const polled = await pollMeetingNote(pendingSession.meetingId, {
+          timeoutMs: 180_000,
+          intervalMs: 2000,
+        });
+        await finishNotesSession(
+          pendingSession.meetingId,
+          polled.note,
+          polled.visitModality ?? pendingSession.visitModality,
+          pendingSession.files?.audioFilename || 'recording.webm',
+        );
+        await stopProcessingAlarm();
+        return;
+      } catch (pollErr) {
+        console.warn('[background] recoverInterruptedProcessing poll failed:', pollErr);
+      }
     }
   }
 
@@ -741,6 +795,7 @@ async function recoverInterruptedProcessing() {
     processingNotes: false,
   };
 
+  await stopProcessingAlarm();
   await chrome.storage.local.set({
     processing: false,
     processingStage: null,
@@ -752,9 +807,26 @@ async function recoverInterruptedProcessing() {
 
 recoverInterruptedProcessing();
 
+if (chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== PROCESSING_ALARM) {
+      return;
+    }
+    // Touch storage so MV3 keeps the worker alive while notes are generating.
+    void chrome.storage.local.get(['processing', 'processingStage']).then((stored) => {
+      if (!stored.processing) {
+        void stopProcessingAlarm();
+      }
+    });
+  });
+}
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'processing-keepalive') {
     port.onMessage.addListener(() => {});
+    port.onDisconnect.addListener(() => {
+      // Popup closed — alarm continues keeping the worker alive if still processing.
+    });
   }
 });
 
@@ -840,8 +912,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         try {
           await chrome.storage.session.set({
             recordingTabId: null,
-            pageVisitModality: 'AUDIO',
-            detectedVisitModality: 'AUDIO',
+            pageVisitModality: 'IN_PERSON',
+            detectedVisitModality: 'IN_PERSON',
+            forcedVisitModality: 'IN_PERSON',
           });
 
           await ensureOffscreenDocument();
@@ -850,7 +923,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           if (result?.ok) {
             await setRecordingState('recording');
             await chrome.storage.session.set({
-              detectedVisitModality: 'AUDIO',
+              detectedVisitModality: 'IN_PERSON',
+              forcedVisitModality: 'IN_PERSON',
             });
             await chrome.storage.local.set({
               recording: true,
@@ -859,7 +933,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               syncError: null,
             });
             wakeBackend().catch(() => {});
-            return { ...result, visitModality: 'AUDIO' };
+            return { ...result, visitModality: 'IN_PERSON' };
           }
 
           await setRecordingState('idle');
@@ -921,6 +995,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await chrome.storage.session.set({ detectedVisitModality: result.visitModality });
         }
         return result;
+      }
+
+      case 'get-mic-level': {
+        const state = await getRecordingState();
+        if (state !== 'recording' && state !== 'paused') {
+          return { ok: true, level: 0, bars: [0, 0, 0, 0, 0] };
+        }
+        try {
+          const result = await sendToOffscreen('get-mic-level');
+          return result?.ok
+            ? result
+            : { ok: true, level: 0, bars: [0, 0, 0, 0, 0] };
+        } catch {
+          return { ok: true, level: 0, bars: [0, 0, 0, 0, 0] };
+        }
+      }
+
+      case 'mic-level': {
+        notifyPopup('mic-level', message.data);
+        return { ok: true };
       }
 
       case 'stop-recording': {
@@ -1095,6 +1189,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
 
         await chrome.storage.local.set({ processing: true, processingStage: 'generating', syncError: null });
+        await startProcessingAlarm();
         try {
           const note = await generateMeetingNotes(resolvedMeetingId, visitModality);
           await finishNotesSession(
@@ -1106,6 +1201,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           return { ok: true, note };
         } catch (err) {
           const errorText = err instanceof Error ? err.message : String(err);
+          await stopProcessingAlarm();
           await chrome.storage.local.set({
             processing: false,
             processingStage: null,
@@ -1256,6 +1352,10 @@ chrome.runtime.onMessage.addListener((message) => {
     notifyPopup('recording-error', message.data);
     chrome.storage.local.set({ recording: false, recordingPaused: false, processing: false });
     chrome.storage.session.set({ recordingState: 'idle' });
+  }
+
+  if (message.target === 'background' && message.type === 'mic-level') {
+    notifyPopup('mic-level', message.data);
   }
 });
 

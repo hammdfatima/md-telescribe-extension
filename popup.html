@@ -14,7 +14,15 @@
 
     <div id="status" class="status" data-state="idle">
       <span class="status-dot" aria-hidden="true"></span>
+      <span class="status-spinner hidden" aria-hidden="true"></span>
       <span id="statusText">Ready to record</span>
+      <div id="micMeter" class="mic-meter hidden" aria-hidden="true" title="Microphone level">
+        <span class="mic-meter-bar" data-bar="0"></span>
+        <span class="mic-meter-bar" data-bar="1"></span>
+        <span class="mic-meter-bar" data-bar="2"></span>
+        <span class="mic-meter-bar" data-bar="3"></span>
+        <span class="mic-meter-bar" data-bar="4"></span>
+      </div>
     </div>
 
     <section id="authPanel" class="card auth-panel">
@@ -117,10 +125,22 @@
             <small>Camera is off / phone</small>
           </span>
         </button>
+        <button id="startInPersonBtn" type="button" class="btn btn-primary visit-start-btn visit-start-btn-wide">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="23"></line>
+            <line x1="8" y1="23" x2="16" y2="23"></line>
+          </svg>
+          <span class="visit-start-label">
+            <strong>In-person visit</strong>
+            <small>Tap to record with microphone</small>
+          </span>
+        </button>
       </div>
 
       <p id="autoDetectHint" class="visit-type-help">
-        Use <strong>Video visit</strong> when the camera is on. Use <strong>Audio visit</strong> for camera-off or phone calls. Wear headphones for clearer doctor transcription.
+        Use <strong>Video visit</strong> or <strong>Audio visit</strong> for telemedicine. Use <strong>In-person visit</strong> to record a face-to-face conversation with the microphone. Wear headphones for clearer doctor transcription on telemedicine visits.
       </p>
 
       <div id="recordingButtons" class="buttons recording-controls hidden">
@@ -143,7 +163,7 @@
     <div id="error" class="error" role="alert"></div>
 
     <section id="sessionPanel" class="session-panel card" aria-live="polite">
-      <h2 id="notesTitle" class="card-title">Telemedicine encounter note</h2>
+      <h2 id="notesTitle" class="card-title">Encounter note</h2>
       <p id="notesSummary" class="notes-summary"></p>
       <div class="notes-label-row">
         <label for="notesContent">Clinical notes</label>
@@ -164,6 +184,13 @@
           </span>
         </label>
       </div>
+      <div id="notesGenerating" class="notes-generating hidden" aria-live="polite">
+        <div class="notes-loader" aria-hidden="true"></div>
+        <p class="notes-generating-title">Generating clinical note</p>
+        <p id="notesGeneratingDetail" class="notes-generating-detail">
+          Transcribing your visit and drafting the SOAP note. Keep this popup open.
+        </p>
+      </div>
       <textarea id="notesContent" placeholder="Generated SOAP notes will appear here…"></textarea>
       <div id="notesDisplay" class="notes-display hidden" aria-readonly="true"></div>
       <div class="session-actions">
@@ -177,7 +204,7 @@
     </section>
 
     <p class="footer-hint">
-      Pick <strong>Video visit</strong> or <strong>Audio visit</strong>, then stop recording to generate clinical notes.
+      Pick <strong>Video</strong>, <strong>Audio</strong>, or <strong>In-person</strong>, then stop recording to generate clinical notes.
     </p>
   </div>
 

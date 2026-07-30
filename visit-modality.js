@@ -89,5 +89,7 @@ function resolveRecordingVisitModality(options = {}) {
 }
 
 function visitModalityLabel(modality) {
-  return modality === 'VIDEO' ? 'video visit' : 'audio visit';
+  if (modality === 'VIDEO') return 'video visit';
+  if (modality === 'IN_PERSON') return 'in-person visit';
+  return 'audio visit';
 }

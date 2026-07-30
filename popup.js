@@ -4,8 +4,10 @@
 
 const statusEl = document.getElementById('status');
 const statusTextEl = document.getElementById('statusText');
+const micMeterEl = document.getElementById('micMeter');
 const startVideoBtn = document.getElementById('startVideoBtn');
 const startAudioBtn = document.getElementById('startAudioBtn');
+const startInPersonBtn = document.getElementById('startInPersonBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const pauseBtnLabel = document.getElementById('pauseBtnLabel');
 const pauseBtnIcon = document.getElementById('pauseBtnIcon');
@@ -16,6 +18,9 @@ const notesTitleEl = document.getElementById('notesTitle');
 const notesSummaryEl = document.getElementById('notesSummary');
 const notesContentEl = document.getElementById('notesContent');
 const notesDisplayEl = document.getElementById('notesDisplay');
+const notesGeneratingEl = document.getElementById('notesGenerating');
+const notesGeneratingDetailEl = document.getElementById('notesGeneratingDetail');
+const statusSpinnerEl = document.querySelector('.status-spinner');
 const copyNotesBtn = document.getElementById('copyNotesBtn');
 const saveNotesBtn = document.getElementById('saveNotesBtn');
 const notesConsentRow = document.getElementById('notesConsentRow');
@@ -93,7 +98,12 @@ function scheduleVisitModalityRefresh() {
         if (!response?.ok || !response.visitModality) {
           return;
         }
-        const modality = response.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO';
+        const modality =
+          response.visitModality === 'VIDEO'
+            ? 'VIDEO'
+            : response.visitModality === 'IN_PERSON'
+              ? 'IN_PERSON'
+              : 'AUDIO';
         setAutoDetectHint(modality);
         // Never overwrite a paused UI — that resets the Pause/Resume button.
         if (recordingPaused || uiState === 'paused') {
@@ -106,7 +116,9 @@ function scheduleVisitModalityRefresh() {
 }
 
 function formatDetectedVisitLabel(modality) {
-  return modality === 'VIDEO' ? 'Video visit detected' : 'Audio visit detected';
+  if (modality === 'VIDEO') return 'Video visit detected';
+  if (modality === 'IN_PERSON') return 'In-person visit';
+  return 'Audio visit detected';
 }
 
 function getUserInitials(user) {
@@ -123,13 +135,17 @@ function setAutoDetectHint(modality) {
     return;
   }
 
-  const defaultText =
-    'Use Video visit when the camera is on. Use Audio visit for camera-off or phone calls. Wear headphones for clearer doctor transcription.';
+  const defaultHtml =
+    'Use <strong>Video visit</strong> or <strong>Audio visit</strong> for telemedicine. Use <strong>In-person visit</strong> to record a face-to-face conversation with the microphone. Wear headphones for clearer doctor transcription on telemedicine visits.';
 
   if (!modality) {
-    autoDetectHintEl.innerHTML = defaultText
-      .replace('Video visit', '<strong>Video visit</strong>')
-      .replace('Audio visit', '<strong>Audio visit</strong>');
+    autoDetectHintEl.innerHTML = defaultHtml;
+    return;
+  }
+
+  if (modality === 'IN_PERSON') {
+    autoDetectHintEl.textContent =
+      'Recording in-person visit — place the microphone between you and the patient. Clinical notes will use the video visit template.';
     return;
   }
 
@@ -139,6 +155,7 @@ function setAutoDetectHint(modality) {
 function setVisitStartButtonsDisabled(disabled) {
   if (startVideoBtn) startVideoBtn.disabled = disabled;
   if (startAudioBtn) startAudioBtn.disabled = disabled;
+  if (startInPersonBtn) startInPersonBtn.disabled = disabled;
 }
 
 function updateAuthUI() {
@@ -351,15 +368,33 @@ function setNotesViewMode(mode) {
   const isEditing = mode === 'edit';
   const isReadonly = mode === 'readonly';
   const isEmpty = mode === 'empty';
+  const isLoading = mode === 'loading';
 
   notesContentEl.classList.toggle('hidden', !isEditing);
-  notesDisplayEl.classList.toggle('hidden', isEmpty || isEditing);
+  notesDisplayEl.classList.toggle('hidden', isEmpty || isEditing || isLoading);
   notesDisplayEl.classList.toggle('readonly', isReadonly);
+  notesGeneratingEl?.classList.toggle('hidden', !isLoading);
   // Show copy whenever notes exist (edit or readonly); consent still gates the action.
-  copyNotesBtn.classList.toggle('hidden', isEmpty);
+  copyNotesBtn.classList.toggle('hidden', isEmpty || isLoading);
 
   notesContentEl.readOnly = !isEditing;
   updateCopyNotesEnabled();
+}
+
+function setNotesGeneratingDetail(stage) {
+  if (!notesGeneratingDetailEl) return;
+  if (stage === 'uploading') {
+    notesGeneratingDetailEl.textContent =
+      'Uploading your recording securely. Keep this popup open.';
+    return;
+  }
+  if (stage === 'transcribing') {
+    notesGeneratingDetailEl.textContent =
+      'Transcribing the visit conversation. Keep this popup open.';
+    return;
+  }
+  notesGeneratingDetailEl.textContent =
+    'Transcribing your visit and drafting the SOAP note. Keep this popup open.';
 }
 
 function renderNotesDisplay(content) {
@@ -418,6 +453,64 @@ function blockUnverifiedNotesClipboard(event) {
   showError('Please confirm patient recording consent and note review before copying.');
 }
 
+/** @type {ReturnType<typeof setInterval> | null} */
+let micMeterPollTimer = null;
+
+function setMicMeterVisible(visible) {
+  if (!micMeterEl) return;
+  micMeterEl.classList.toggle('hidden', !visible);
+  micMeterEl.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  if (!visible) {
+    stopMicMeterPolling();
+    updateMicMeterBars([0, 0, 0, 0, 0]);
+  } else {
+    startMicMeterPolling();
+  }
+}
+
+/**
+ * @param {number[]} bars
+ */
+function updateMicMeterBars(bars) {
+  if (!micMeterEl) return;
+  const nodes = micMeterEl.querySelectorAll('.mic-meter-bar');
+  nodes.forEach((bar, index) => {
+    const value = Math.max(0, Math.min(1, Number(bars?.[index]) || 0));
+    // Keep a small floor so idle bars are visible, then scale speech strongly.
+    const heightPct = Math.max(8, Math.round(8 + value * 92));
+    bar.style.height = `${heightPct}%`;
+  });
+}
+
+function stopMicMeterPolling() {
+  if (micMeterPollTimer) {
+    clearInterval(micMeterPollTimer);
+    micMeterPollTimer = null;
+  }
+}
+
+function startMicMeterPolling() {
+  stopMicMeterPolling();
+  const poll = async () => {
+    if (uiState !== 'recording' && uiState !== 'paused') {
+      stopMicMeterPolling();
+      return;
+    }
+    try {
+      const response = await sendToBackground('get-mic-level');
+      if (response?.ok && Array.isArray(response.bars)) {
+        updateMicMeterBars(response.bars);
+      }
+    } catch {
+      // Ignore transient MV3 messaging blips while recording.
+    }
+  };
+  void poll();
+  micMeterPollTimer = setInterval(() => {
+    void poll();
+  }, 60);
+}
+
 function setPauseButton(paused) {
   if (!pauseBtn || !pauseBtnLabel || !pauseBtnIcon) return;
 
@@ -452,6 +545,10 @@ function setStatus(state, message) {
   };
 
   statusTextEl.textContent = message || labels[state];
+  statusSpinnerEl?.classList.toggle(
+    'hidden',
+    !['saving', 'syncing', 'uploading', 'generating'].includes(state),
+  );
   const startDisabled = ['recording', 'paused', 'saving', 'syncing', 'uploading', 'generating'].includes(
     state,
   );
@@ -467,6 +564,7 @@ function setStatus(state, message) {
   stopBtn.disabled = !isActivelyRecording;
   pauseBtn.disabled = !isActivelyRecording;
   setPauseButton(state === 'paused');
+  setMicMeterVisible(isActivelyRecording);
 }
 
 function updateSaveNotesEnabled() {
@@ -545,7 +643,7 @@ function showSession(session) {
   }
 
   if (session.note) {
-    notesTitleEl.textContent = session.note.title || 'Telemedicine Encounter Note';
+    notesTitleEl.textContent = session.note.title || 'Encounter Note';
     notesSummaryEl.textContent = session.note.summary || '';
 
     if (session.notesSaved) {
@@ -560,13 +658,13 @@ function showSession(session) {
 
     setStatus(session.notesSaved ? 'saved' : 'notes');
   } else if (session.processingNotes) {
-    notesTitleEl.textContent = 'Telemedicine Encounter Note';
+    notesTitleEl.textContent = 'Encounter Note';
     notesSummaryEl.textContent = '';
     notesContentEl.value = '';
     notesDisplayEl.innerHTML = '';
-    setNotesViewMode('empty');
-    notesContentEl.classList.remove('hidden');
-    setSaveStatus('Generating notes from your recording…');
+    setNotesViewMode('loading');
+    setNotesGeneratingDetail('generating');
+    setSaveStatus('');
     setStatus('generating', 'Generating encounter note…');
   } else {
     notesContentEl.value = '';
@@ -588,7 +686,7 @@ function showSoapNotes(note, notesSaved = false) {
     note,
     notesSaved,
   };
-  notesTitleEl.textContent = note.title || 'Telemedicine Encounter Note';
+  notesTitleEl.textContent = note.title || 'Encounter Note';
   notesSummaryEl.textContent = note.summary || '';
 
   if (notesSaved) {
@@ -703,12 +801,26 @@ function startProcessingKeepAlive() {
     processingKeepAlivePort.onDisconnect.addListener(() => {
       processingKeepAlivePort = null;
     });
+    // Periodic pings help keep the service worker alive during long Whisper/note jobs.
+    processingKeepAlivePort.postMessage({ type: 'ping', at: Date.now() });
+    const pingId = window.setInterval(() => {
+      try {
+        processingKeepAlivePort?.postMessage({ type: 'ping', at: Date.now() });
+      } catch {
+        window.clearInterval(pingId);
+      }
+    }, 20_000);
+    processingKeepAlivePort._pingId = pingId;
   } catch {
     processingKeepAlivePort = null;
   }
 }
 
 function stopProcessingKeepAlive() {
+  const pingId = processingKeepAlivePort?._pingId;
+  if (typeof pingId === 'number') {
+    window.clearInterval(pingId);
+  }
   processingKeepAlivePort?.disconnect();
   processingKeepAlivePort = null;
 }
@@ -719,6 +831,9 @@ function clearProcessingWatchdog() {
     processingWatchdogId = null;
   }
 }
+
+/** Allow up to 10 minutes for long patient visits (Whisper + note generation). */
+const PROCESSING_MAX_WAIT_SEC = 600;
 
 function startProcessingWatchdog() {
   clearProcessingWatchdog();
@@ -753,24 +868,44 @@ function startProcessingWatchdog() {
 
       const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
 
-      if (processing && elapsedSec >= 15 && elapsedSec < 180) {
+      if ((processing || pendingSession?.processingNotes) && elapsedSec >= 15) {
         setStatus(
           'generating',
-          `Generating encounter note… (${elapsedSec}s — keep this popup open)`
+          `Generating encounter note… (${elapsedSec}s — keep this popup open)`,
         );
+        if (currentSession?.processingNotes || pendingSession?.processingNotes) {
+          setNotesViewMode('loading');
+        }
+      }
+
+      // While the background is still actively processing, keep waiting.
+      if (processing && elapsedSec < PROCESSING_MAX_WAIT_SEC) {
+        return;
       }
 
       const stuck = !processing && pendingSession?.processingNotes && !pendingSession?.note;
-      if (!stuck && elapsedSec < 180) {
+
+      // Not stuck and not past the hard limit yet.
+      if (!stuck && elapsedSec < PROCESSING_MAX_WAIT_SEC) {
         return;
       }
 
       if (pendingSession?.meetingId && !pendingSession?.note) {
         const response = await sendToBackground('poll-meeting-note', {
           meetingId: pendingSession.meetingId,
-          timeoutMs: 20_000,
+          timeoutMs: 120_000,
         });
         if (response?.ok && response.note) {
+          clearProcessingWatchdog();
+          stopProcessingKeepAlive();
+          return;
+        }
+
+        // One more attempt: ask background to resume note generation.
+        const retry = await sendToBackground('retry-generate-notes', {
+          meetingId: pendingSession.meetingId,
+        });
+        if (retry?.ok && retry.note) {
           clearProcessingWatchdog();
           stopProcessingKeepAlive();
           return;
@@ -782,7 +917,7 @@ function startProcessingWatchdog() {
 
       const errorMessage =
         syncError ||
-        'Could not reach the server or generation timed out. Check your internet connection, then try again.';
+        'Could not reach the server or generation timed out. Longer visits can take several minutes — keep this popup open and try again.';
 
       if (pendingSession) {
         showSession({ ...pendingSession, processingNotes: false });
@@ -837,7 +972,7 @@ function restoreFromStorage() {
           if (pendingSession.meetingId) {
             void sendToBackground('poll-meeting-note', {
               meetingId: pendingSession.meetingId,
-              timeoutMs: 20_000,
+              timeoutMs: 120_000,
             }).then((response) => {
               if (response?.ok && response.note) {
                 return;
@@ -930,15 +1065,28 @@ async function restoreRecordingStatusFromStorage() {
 function applyProcessingStage(stage) {
   switch (stage) {
     case 'generating':
+      setNotesGeneratingDetail('generating');
+      if (currentSession?.processingNotes) {
+        setNotesViewMode('loading');
+      }
       setStatus('generating', 'Generating encounter note…');
       break;
     case 'uploading':
+      setNotesGeneratingDetail('uploading');
+      if (currentSession?.processingNotes) {
+        setNotesViewMode('loading');
+      }
       setStatus('uploading', 'Uploading audio in background…');
       break;
     case 'transcribing':
+      setNotesGeneratingDetail('transcribing');
+      if (currentSession?.processingNotes) {
+        setNotesViewMode('loading');
+      }
       setStatus('saving', 'Saving & transcribing…');
       break;
     default:
+      setNotesGeneratingDetail('uploading');
       setStatus('uploading', 'Uploading audio…');
       break;
   }
@@ -1173,6 +1321,79 @@ async function startRecording(forcedVisitModality = 'AUDIO', options = {}) {
   }
 }
 
+/**
+ * Mic-only in-person visit — records the room conversation without capturing a meeting tab.
+ */
+async function startInPersonRecording() {
+  showError('');
+  hideSession();
+  updateSessionButtons();
+  setStatus('idle', 'Checking account…');
+
+  try {
+    const session = await refreshAuthSession();
+    if (!session?.user) {
+      setStatus('idle', 'Sign in required');
+      showError('Sign in to your md telescribe account before recording.');
+      return;
+    }
+
+    if (!session.usage?.canGenerateNotes) {
+      setStatus('idle', 'Subscription required');
+      showError('You have used your free notes. Subscribe to continue generating clinical notes.');
+      updateAuthUI();
+      return;
+    }
+
+    setStatus('idle', 'Requesting mic…');
+    const { recording } = await chrome.storage.local.get('recording');
+    const { recordingState = 'idle' } = await chrome.storage.session.get('recordingState');
+
+    if (
+      recording ||
+      recordingState === 'recording' ||
+      recordingState === 'paused' ||
+      recordingState === 'starting'
+    ) {
+      setStatus(recordingState === 'paused' ? 'paused' : 'recording');
+      showError('Recording is already in progress. Click Stop Recording first.');
+      return;
+    }
+
+    await chrome.storage.local.set({ pendingVisitModality: 'IN_PERSON' });
+    await ensureMicrophonePermission();
+    setStatus('idle', 'Starting in-person visit…');
+
+    const response = await sendToBackground('start-dictation');
+    if (!response?.ok) {
+      throw new Error(response?.error || 'Failed to start in-person recording.');
+    }
+
+    setAutoDetectHint('IN_PERSON');
+    setStatus('recording', 'Recording — in-person visit');
+    scheduleVisitModalityRefresh();
+    await chrome.storage.local.set({
+      recording: true,
+      processing: false,
+      syncError: null,
+      pendingVisitModality: null,
+    });
+    await chrome.storage.session.remove([
+      'pendingMeetingAutoStart',
+      'pendingMeetingCapture',
+      'preferredMeetingTabId',
+      'preferredMeetingTabAt',
+    ]);
+  } catch (err) {
+    console.error('[popup] startInPersonRecording failed:', err);
+    setStatus('idle');
+    setAutoDetectHint(null);
+    showError(err instanceof Error ? err.message : String(err));
+    await chrome.storage.local.set({ recording: false, processing: false, pendingVisitModality: null });
+    await chrome.storage.session.set({ recordingState: 'idle' });
+  }
+}
+
 async function consumeMeetingAutostart() {
   // Meeting prompt only opens the extension now. Visit type is chosen here.
   const params = new URLSearchParams(window.location.search);
@@ -1192,7 +1413,7 @@ async function consumeMeetingAutostart() {
     } catch {
       // Ignore history errors in extension pages.
     }
-    setStatus('idle', 'Choose Video visit or Audio visit to start');
+    setStatus('idle', 'Choose Video, Audio, or In-person visit to start');
   }
 
   return false;
@@ -1426,7 +1647,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (session?.meetingId && !session?.note) {
       void sendToBackground('poll-meeting-note', {
         meetingId: session.meetingId,
-        timeoutMs: 20_000,
+        timeoutMs: 120_000,
       }).then((response) => {
         if (response?.ok && response.note) {
           return;
@@ -1498,6 +1719,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.target !== 'popup') return;
 
+  if (message.type === 'mic-level') {
+    if (uiState === 'recording' || uiState === 'paused') {
+      setMicMeterVisible(true);
+      updateMicMeterBars(message.data?.bars || [0, 0, 0, 0, 0]);
+    }
+    return;
+  }
+
   if (message.type === 'recording-error') {
     setStatus('idle');
     showError(message.data);
@@ -1511,10 +1740,10 @@ chrome.runtime.onMessage.addListener((message) => {
       return;
     }
     if (message.data?.stage === 'uploading') {
-      setStatus('uploading', 'Uploading audio…');
+      applyProcessingStage('uploading');
     }
     if (message.data?.stage === 'generating') {
-      setStatus('generating', 'Generating encounter note…');
+      applyProcessingStage('generating');
     }
   }
 
@@ -1529,6 +1758,8 @@ chrome.runtime.onMessage.addListener((message) => {
       processingNotes: true,
       files: message.data.files,
     });
+    setNotesViewMode('loading');
+    setNotesGeneratingDetail('uploading');
     startProcessingKeepAlive();
     startProcessingWatchdog();
   }
@@ -1566,6 +1797,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
 startVideoBtn?.addEventListener('click', () => startRecording('VIDEO'));
 startAudioBtn?.addEventListener('click', () => startRecording('AUDIO'));
+startInPersonBtn?.addEventListener('click', () => startInPersonRecording());
 notesContentEl?.addEventListener('copy', blockUnverifiedNotesClipboard);
 notesContentEl?.addEventListener('cut', blockUnverifiedNotesClipboard);
 notesDisplayEl?.addEventListener('copy', blockUnverifiedNotesClipboard);
@@ -1616,7 +1848,7 @@ startNewRecordingBtn.addEventListener('click', () => {
   hideSession();
   showError('');
   setAutoDetectHint(null);
-  setStatus('idle', 'Choose Video visit or Audio visit to start');
+  setStatus('idle', 'Choose Video, Audio, or In-person visit to start');
   void restoreRecordingStatusFromStorage();
 });
 dismissSessionBtn.addEventListener('click', () => {

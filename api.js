@@ -5,6 +5,10 @@
 
 const API_TIMEOUT_MS = 120_000;
 const API_WAKE_TIMEOUT_MS = 90_000;
+/** Long visits need more time for large uploads + Whisper + note generation. */
+const AUDIO_UPLOAD_TIMEOUT_MS = 300_000;
+const NOTE_GENERATE_TIMEOUT_MS = 600_000;
+const NOTE_POLL_TIMEOUT_MS = 600_000;
 /** Keep extension sign-in for at least one day (matches access JWT lifetime). */
 const AUTH_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const AUTH_UI_CACHE_KEY = 'authUiCache';
@@ -304,13 +308,13 @@ function getLoginUrl() {
 
 /**
  * @param {string} [title]
- * @param {'AUDIO' | 'VIDEO'} [visitModality]
+ * @param {'AUDIO' | 'VIDEO' | 'IN_PERSON'} [visitModality]
  */
 async function createMeeting(title, visitModality = 'AUDIO') {
   return apiRequest('/meetings', {
     method: 'POST',
     body: JSON.stringify({
-      title: title || 'Tab + Mic Recording',
+      title: title || 'Visit Recording',
       visitModality,
     }),
   });
@@ -343,7 +347,7 @@ async function uploadMeetingAudio(meetingId, audioBuffer, source = 'mixed') {
       'X-Audio-Source': source,
     },
     body: audioBuffer,
-    timeoutMs: 180_000,
+    timeoutMs: AUDIO_UPLOAD_TIMEOUT_MS,
   });
 }
 
@@ -364,23 +368,34 @@ function isTransientNetworkError(err) {
   }
 
   const message = err.message;
+  const status = err instanceof ApiClientError ? err.status : undefined;
   return (
     err.name === 'AbortError' ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
     message.includes('Could not reach the server') ||
     message.includes('Failed to fetch') ||
-    message.includes('NetworkError')
+    message.includes('NetworkError') ||
+    message.includes('API request failed (502)') ||
+    message.includes('API request failed (503)') ||
+    message.includes('API request failed (504)')
   );
 }
 
 /**
  * @param {object | null | undefined} meeting
  * @param {{ content?: string }} note
- * @returns {{ note: typeof note, visitModality: 'AUDIO' | 'VIDEO' }}
+ * @returns {{ note: typeof note, visitModality: 'AUDIO' | 'VIDEO' | 'IN_PERSON' }}
  */
 function wrapMeetingNoteResult(meeting, note) {
+  const modality = meeting?.visitModality;
   return {
     note,
-    visitModality: meeting?.visitModality === 'VIDEO' ? 'VIDEO' : 'AUDIO',
+    visitModality:
+      modality === 'VIDEO' || modality === 'IN_PERSON' || modality === 'AUDIO'
+        ? modality
+        : 'AUDIO',
   };
 }
 
@@ -388,10 +403,10 @@ function wrapMeetingNoteResult(meeting, note) {
  * Poll GET /meetings/:id until a note with content exists.
  * @param {string} meetingId
  * @param {{ timeoutMs?: number, intervalMs?: number }} [options]
- * @returns {Promise<{ note: object, visitModality: 'AUDIO' | 'VIDEO' }>}
+ * @returns {Promise<{ note: object, visitModality: 'AUDIO' | 'VIDEO' | 'IN_PERSON' }>}
  */
 async function pollMeetingNote(meetingId, options = {}) {
-  const timeoutMs = options.timeoutMs ?? 180_000;
+  const timeoutMs = options.timeoutMs ?? NOTE_POLL_TIMEOUT_MS;
   const intervalMs = options.intervalMs ?? 2500;
   const deadline = Date.now() + timeoutMs;
 
@@ -413,45 +428,39 @@ async function pollMeetingNote(meetingId, options = {}) {
  * Start note generation on the server, then poll until the note is ready.
  * Polling survives dropped long-running connections (common in MV3 service workers).
  * @param {string} meetingId
- * @param {'AUDIO' | 'VIDEO'} [visitModality]
- * @returns {Promise<{ note: object, visitModality: 'AUDIO' | 'VIDEO' }>}
+ * @param {'AUDIO' | 'VIDEO' | 'IN_PERSON'} [visitModality]
+ * @returns {Promise<{ note: object, visitModality: 'AUDIO' | 'VIDEO' | 'IN_PERSON' }>}
  */
 async function generateMeetingNotes(meetingId, visitModality) {
-  const deadline = Date.now() + 180_000;
-  let generateResult = null;
+  const deadline = Date.now() + NOTE_GENERATE_TIMEOUT_MS;
   let generateError = null;
   let generateSettled = false;
+  let generateAttempts = 0;
   const generateBody = visitModality ? { visitModality } : {};
 
-  void apiRequest(`/meetings/${meetingId}/notes/generate`, {
-    method: 'POST',
-    body: JSON.stringify(generateBody),
-    timeoutMs: 180_000,
-  })
-    .then((note) => {
-      generateResult = note;
+  // Server returns quickly and runs Whisper/GPT in the background.
+  // Keep this kick timeout short so proxies don't kill a long-held connection.
+  const kickGenerate = () => {
+    generateAttempts += 1;
+    generateSettled = false;
+    generateError = null;
+    void apiRequest(`/meetings/${meetingId}/notes/generate`, {
+      method: 'POST',
+      body: JSON.stringify(generateBody),
+      timeoutMs: 60_000,
+      retries: 1,
     })
-    .catch((err) => {
-      generateError = err;
-    })
-    .finally(() => {
-      generateSettled = true;
-    });
+      .catch((err) => {
+        generateError = err;
+      })
+      .finally(() => {
+        generateSettled = true;
+      });
+  };
+
+  kickGenerate();
 
   while (Date.now() < deadline) {
-    if (generateResult?.content?.trim()) {
-      try {
-        const meeting = await getMeeting(meetingId);
-        return wrapMeetingNoteResult(meeting, generateResult);
-      } catch {
-        return wrapMeetingNoteResult(null, generateResult);
-      }
-    }
-
-    if (generateSettled && generateError && !isTransientNetworkError(generateError)) {
-      throw generateError;
-    }
-
     try {
       const meeting = await getMeeting(meetingId);
       if (meeting?.note?.content?.trim()) {
@@ -462,6 +471,22 @@ async function generateMeetingNotes(meetingId, visitModality) {
         throw err;
       }
       generateError = err;
+    }
+
+    // Retry kick if the start request failed transiently (502 / network blip).
+    if (
+      generateSettled &&
+      generateError &&
+      isTransientNetworkError(generateError) &&
+      generateAttempts < 4
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      kickGenerate();
+      continue;
+    }
+
+    if (generateSettled && generateError && !isTransientNetworkError(generateError)) {
+      throw generateError;
     }
 
     await new Promise((resolve) => setTimeout(resolve, 2500));

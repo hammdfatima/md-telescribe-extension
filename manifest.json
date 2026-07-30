@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "md telescribe",
-  "version": "1.6.5",
-  "description": "Record telemedicine visits and generate AI-powered SOAP notes with md telescribe.",
+  "version": "1.6.9",
+  "description": "Record telemedicine or in-person visits and generate AI-powered SOAP notes with md telescribe.",
   "permissions": [
     "tabCapture",
     "activeTab",
@@ -11,7 +11,8 @@
     "offscreen",
     "downloads",
     "tabs",
-    "notifications"
+    "notifications",
+    "alarms"
   ],
   "host_permissions": [
     "https://huggingface.co/*",

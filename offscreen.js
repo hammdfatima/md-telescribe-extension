@@ -32,6 +32,24 @@ let micRecorder = null;
 /** @type {MediaRecorder | null} */
 let tabRecorder = null;
 
+/** Live ASR recorder — restarted on an interval so each blob is a valid WebM for Whisper. */
+/** @type {MediaRecorder | null} */
+let liveRecorder = null;
+
+/** @type {Blob[]} */
+let liveRecordedChunks = [];
+
+/** @type {ReturnType<typeof setTimeout> | null} */
+let liveChunkTimer = null;
+
+/** @type {MediaStream | null} */
+let liveChunkStream = null;
+
+let liveChunkSeq = 0;
+
+/** Seconds of audio per live Whisper request (shorter = faster notes after stop). */
+const LIVE_CHUNK_MS = 12_000;
+
 /** @type {Blob[]} */
 let recordedChunks = [];
 
@@ -352,6 +370,106 @@ function attachChunkCollector(recorder, chunks) {
 }
 
 /**
+ * Send a completed live WebM segment to the service worker for server Whisper.
+ * @param {Blob} blob
+ */
+async function emitLiveTranscriptChunk(blob) {
+  if (!blob || blob.size < 8 * 1024) {
+    return;
+  }
+
+  liveChunkSeq += 1;
+  const seq = liveChunkSeq;
+  try {
+    const audioDataUrl = await blobToDataUrl(blob);
+    await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'live-transcript-chunk',
+      data: { audioDataUrl, seq },
+    });
+  } catch (err) {
+    console.warn('[offscreen] live transcript chunk send failed:', err);
+  }
+}
+
+/**
+ * Start (or restart) the rolling live ASR MediaRecorder on the mixed stream.
+ * @param {MediaStream} stream
+ */
+function startLiveChunkCycle(stream) {
+  if (!stream || !isRecording || isPaused) {
+    return;
+  }
+
+  stopLiveChunkTimer();
+  liveChunkStream = stream;
+  liveRecordedChunks = [];
+
+  try {
+    liveRecorder = new MediaRecorder(stream, {
+      mimeType: MIME_TYPE,
+      audioBitsPerSecond: 128000,
+    });
+  } catch (err) {
+    console.warn('[offscreen] live ASR recorder unavailable:', err);
+    liveRecorder = null;
+    return;
+  }
+
+  attachChunkCollector(liveRecorder, liveRecordedChunks);
+  liveRecorder.start(1000);
+  liveChunkTimer = setTimeout(() => {
+    void rotateLiveChunk({ final: false });
+  }, LIVE_CHUNK_MS);
+}
+
+function stopLiveChunkTimer() {
+  if (liveChunkTimer) {
+    clearTimeout(liveChunkTimer);
+    liveChunkTimer = null;
+  }
+}
+
+/**
+ * Finalize the current live segment and optionally start the next one.
+ * @param {{ final?: boolean }} [options]
+ */
+async function rotateLiveChunk(options = {}) {
+  const final = Boolean(options.final);
+  stopLiveChunkTimer();
+
+  const recorder = liveRecorder;
+  const chunks = liveRecordedChunks;
+  const stream = liveChunkStream;
+  liveRecorder = null;
+  liveRecordedChunks = [];
+
+  let blob = null;
+  if (recorder || chunks.length > 0) {
+    blob = await finalizeRecorder(recorder, chunks, MIME_TYPE);
+  }
+
+  if (!final && isRecording && !isPaused && stream) {
+    startLiveChunkCycle(stream);
+  }
+
+  if (blob) {
+    await emitLiveTranscriptChunk(blob);
+  }
+}
+
+async function stopLiveChunkCapture() {
+  stopLiveChunkTimer();
+  liveChunkStream = null;
+  if (liveRecorder || liveRecordedChunks.length > 0) {
+    await rotateLiveChunk({ final: true });
+  } else {
+    liveRecorder = null;
+    liveRecordedChunks = [];
+  }
+}
+
+/**
  * Stop a MediaRecorder and resolve with a WebM blob.
  * @param {MediaRecorder | null} recorder
  * @param {Blob[]} chunks
@@ -383,6 +501,10 @@ function finalizeRecorder(recorder, chunks, mimeType) {
  */
 async function cleanup() {
   stopMicLevelMeter();
+  stopLiveChunkTimer();
+  liveRecorder = null;
+  liveRecordedChunks = [];
+  liveChunkStream = null;
 
   mediaRecorder = null;
   micRecorder = null;
@@ -773,6 +895,7 @@ async function startRecording(payload) {
     isRecording = true;
     isPaused = false;
     startMicLevelMeter(micGainNode);
+    startLiveChunkCycle(mixDestination.stream);
 
     return { ok: true, visitModality: resolveVisitModality() };
   } catch (err) {
@@ -840,6 +963,7 @@ async function startDictationRecording() {
     isRecording = true;
     isPaused = false;
     startMicLevelMeter(micGainNode);
+    startLiveChunkCycle(mixDestination.stream);
 
     return { ok: true, visitModality: 'IN_PERSON', dictation: true };
   } catch (err) {
@@ -873,7 +997,7 @@ async function pauseRecording() {
     return { ok: true, paused: true };
   }
 
-  const recorders = [mediaRecorder, micRecorder, tabRecorder];
+  const recorders = [mediaRecorder, micRecorder, tabRecorder, liveRecorder];
   for (const recorder of recorders) {
     if (recorder?.state === 'recording') {
       recorder.pause();
@@ -881,6 +1005,7 @@ async function pauseRecording() {
   }
 
   // Keep AudioContext running so tab monitoring still plays the call.
+  stopLiveChunkTimer();
   isPaused = true;
   return { ok: true, paused: true };
 }
@@ -896,7 +1021,7 @@ async function resumeRecording() {
     return { ok: true, paused: false };
   }
 
-  const recorders = [mediaRecorder, micRecorder, tabRecorder];
+  const recorders = [mediaRecorder, micRecorder, tabRecorder, liveRecorder];
   for (const recorder of recorders) {
     if (recorder?.state === 'paused') {
       recorder.resume();
@@ -904,6 +1029,13 @@ async function resumeRecording() {
   }
 
   isPaused = false;
+  if (liveChunkStream && (!liveRecorder || liveRecorder.state === 'inactive')) {
+    startLiveChunkCycle(liveChunkStream);
+  } else if (liveRecorder?.state === 'recording') {
+    liveChunkTimer = setTimeout(() => {
+      void rotateLiveChunk({ final: false });
+    }, LIVE_CHUNK_MS);
+  }
   return { ok: true, paused: false };
 }
 
@@ -921,6 +1053,9 @@ async function stopRecording() {
     if (isPaused) {
       await resumeRecording();
     }
+
+    // Flush the last live ASR segment before stopping the main recorders.
+    await stopLiveChunkCapture();
 
     const mixedBlob = await finalizeRecorder(mediaRecorder, recordedChunks, MIME_TYPE);
     const micBlob =

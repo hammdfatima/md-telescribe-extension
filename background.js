@@ -363,6 +363,12 @@ async function beginTabRecording({ tabId, streamId, forcedVisitModality }) {
         pendingMeetingStart: null,
       });
       wakeBackend().catch(() => {});
+      // Create meeting early so in-visit Whisper chunks can land before Stop.
+      try {
+        await ensureActiveMeeting(normalizedModality);
+      } catch (err) {
+        console.warn('[background] early meeting create failed:', err);
+      }
       return {
         ...result,
         visitModality:
@@ -506,12 +512,79 @@ async function releaseTabCapture() {
   }
 
   pendingRecordingFiles = null;
+  await chrome.storage.session.remove('activeMeetingId');
   await setRecordingState('idle');
   await chrome.storage.local.set({ recording: false, recordingPaused: false, processing: false });
 }
 
 /** @type {Promise<void> | null} */
 let processingRecordingPromise = null;
+
+/** In-flight live Whisper uploads so stop→notes can wait for the last chunks. */
+/** @type {Set<Promise<unknown>>} */
+const pendingLiveTranscriptUploads = new Set();
+
+/**
+ * Create a meeting as soon as recording starts so live chunks can be transcribed.
+ * @param {'AUDIO' | 'VIDEO' | 'IN_PERSON'} visitModality
+ */
+async function ensureActiveMeeting(visitModality) {
+  const stored = await chrome.storage.session.get('activeMeetingId');
+  if (stored.activeMeetingId) {
+    return stored.activeMeetingId;
+  }
+
+  await wakeBackend().catch(() => {});
+  const title = `Visit ${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const meeting = await createMeeting(title, visitModality);
+  await chrome.storage.session.set({ activeMeetingId: meeting.id });
+  return meeting.id;
+}
+
+/**
+ * @param {{ audioDataUrl?: string, seq?: number }} data
+ * @param {'AUDIO' | 'VIDEO' | 'IN_PERSON'} [fallbackModality]
+ */
+async function handleLiveTranscriptChunk(data, fallbackModality = 'AUDIO') {
+  if (!data?.audioDataUrl) {
+    return { ok: false, error: 'Missing audio chunk.' };
+  }
+
+  let { activeMeetingId } = await chrome.storage.session.get('activeMeetingId');
+  if (!activeMeetingId) {
+    try {
+      activeMeetingId = await ensureActiveMeeting(fallbackModality);
+    } catch (err) {
+      console.warn('[background] could not create meeting for live chunk:', err);
+      return { ok: false, error: 'No active meeting for live transcription.' };
+    }
+  }
+
+  const uploadPromise = (async () => {
+    const audioBuffer = dataUrlToArrayBuffer(data.audioDataUrl);
+    if (audioBuffer.byteLength < 8 * 1024) {
+      return;
+    }
+    await transcribeMeetingChunk(activeMeetingId, audioBuffer);
+  })()
+    .catch((err) => {
+      console.warn('[background] live transcript chunk failed:', err);
+    })
+    .finally(() => {
+      pendingLiveTranscriptUploads.delete(uploadPromise);
+    });
+
+  pendingLiveTranscriptUploads.add(uploadPromise);
+  return { ok: true };
+}
+
+async function flushPendingLiveTranscripts() {
+  const pending = [...pendingLiveTranscriptUploads];
+  if (pending.length === 0) {
+    return;
+  }
+  await Promise.allSettled(pending);
+}
 
 async function updatePendingSessionMeeting(meetingId, visitModality) {
   const stored = await chrome.storage.local.get('pendingSession');
@@ -600,11 +673,12 @@ async function runProcessStoppedRecording(payload) {
 
     await wakeBackend().catch(() => {});
 
-    const { detectedVisitModality, pageVisitModality, forcedVisitModality } =
+    const { detectedVisitModality, pageVisitModality, forcedVisitModality, activeMeetingId } =
       await chrome.storage.session.get([
         'detectedVisitModality',
         'pageVisitModality',
         'forcedVisitModality',
+        'activeMeetingId',
       ]);
     visitModality =
       forcedVisitModality === 'VIDEO' ||
@@ -617,48 +691,66 @@ async function runProcessStoppedRecording(payload) {
             stopSignal: payload.visitModality,
           });
 
-    const meeting = await createMeeting(
-      payload.filename.replace(/\.webm$/, ''),
-      visitModality,
-    );
-    meetingId = meeting.id;
+    if (activeMeetingId) {
+      meetingId = activeMeetingId;
+    } else {
+      const meeting = await createMeeting(
+        payload.filename.replace(/\.webm$/, ''),
+        visitModality,
+      );
+      meetingId = meeting.id;
+      await chrome.storage.session.set({ activeMeetingId: meetingId });
+    }
     if (await isStale()) {
       return;
     }
     await updatePendingSessionMeeting(meetingId, visitModality);
 
-    await uploadMeetingAudio(meetingId, payload.audioBuffer, 'mixed');
-    await completeMeeting(meetingId);
+    // Let the final live Whisper chunk(s) finish before kicking note generation.
+    await flushPendingLiveTranscripts();
 
-    if (await isStale()) {
-      return;
-    }
+    // Start notes ASAP — do not block on large audio uploads (OneDrive/upload can fail).
     await setProcessingStage('generating');
     notifyPopup('sync-status', { stage: 'generating' });
 
-    // Side-channel mic/tab uploads must not delay note generation.
-    // Notes use the mixed track (1 Whisper call) — same speed as in-person.
-    const sideUploads = [];
-    if (payload.micAudioBuffer && payload.micAudioBuffer.byteLength >= 1024) {
-      sideUploads.push(uploadMeetingAudio(meetingId, payload.micAudioBuffer, 'mic'));
+    try {
+      await completeMeeting(meetingId);
+    } catch (err) {
+      console.warn('[background] completeMeeting failed (will still generate):', err);
     }
-    if (payload.tabAudioBuffer && payload.tabAudioBuffer.byteLength >= 1024) {
-      sideUploads.push(uploadMeetingAudio(meetingId, payload.tabAudioBuffer, 'tab'));
-    }
-    if (sideUploads.length > 0) {
-      void Promise.all(sideUploads).catch((err) => {
-        console.warn('[background] side-channel audio upload failed:', err);
-      });
-    }
-    console.log('[background] uploaded audio bytes:', payload.audioBuffer.byteLength);
 
-    const generated = await generateMeetingNotes(meetingId, visitModality);
+    const generatePromise = generateMeetingNotes(meetingId, visitModality);
+
+    void (async () => {
+      try {
+        await uploadMeetingAudio(meetingId, payload.audioBuffer, 'mixed');
+        console.log('[background] uploaded audio bytes:', payload.audioBuffer.byteLength);
+      } catch (err) {
+        console.warn('[background] mixed audio upload failed:', err);
+      }
+
+      const sideUploads = [];
+      if (payload.micAudioBuffer && payload.micAudioBuffer.byteLength >= 1024) {
+        sideUploads.push(uploadMeetingAudio(meetingId, payload.micAudioBuffer, 'mic'));
+      }
+      if (payload.tabAudioBuffer && payload.tabAudioBuffer.byteLength >= 1024) {
+        sideUploads.push(uploadMeetingAudio(meetingId, payload.tabAudioBuffer, 'tab'));
+      }
+      if (sideUploads.length > 0) {
+        await Promise.all(sideUploads).catch((err) => {
+          console.warn('[background] side-channel audio upload failed:', err);
+        });
+      }
+    })();
+
+    const generated = await generatePromise;
     note = generated.note;
     visitModality = generated.visitModality ?? visitModality;
     if (await isStale()) {
       return;
     }
     await finishNotesSession(meetingId, note, visitModality, payload.filename);
+    await chrome.storage.session.remove('activeMeetingId');
   } catch (err) {
     if (await isStale()) {
       return;
@@ -670,13 +762,14 @@ async function runProcessStoppedRecording(payload) {
 
     if (meetingId && !note) {
       try {
-        const recovered = await pollMeetingNote(meetingId, { timeoutMs: 180_000, intervalMs: 2000 });
+        const recovered = await generateMeetingNotes(meetingId, visitModality);
         if (await isStale()) {
           return;
         }
         note = recovered.note;
         visitModality = recovered.visitModality ?? visitModality;
         await finishNotesSession(meetingId, note, visitModality, payload.filename);
+        await chrome.storage.session.remove('activeMeetingId');
         return;
       } catch (recoverErr) {
         console.warn('[background] note recovery after error failed:', recoverErr);
@@ -933,6 +1026,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               syncError: null,
             });
             wakeBackend().catch(() => {});
+            try {
+              await ensureActiveMeeting('IN_PERSON');
+            } catch (err) {
+              console.warn('[background] early meeting create failed:', err);
+            }
             return { ...result, visitModality: 'IN_PERSON' };
           }
 
@@ -1015,6 +1113,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'mic-level': {
         notifyPopup('mic-level', message.data);
         return { ok: true };
+      }
+
+      case 'live-transcript-chunk': {
+        return handleLiveTranscriptChunk(message.data || {});
       }
 
       case 'stop-recording': {
@@ -1148,6 +1250,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case 'has-recording-files': {
         return { ok: true, files: buildSessionFilesMeta() };
+      }
+
+      case 'open-offline-template': {
+        try {
+          const visitModality =
+            message.data?.visitModality === 'AUDIO' ? 'AUDIO' : 'VIDEO';
+          await wakeBackend().catch(() => {});
+          const title =
+            visitModality === 'AUDIO'
+              ? `Offline Audio Template ${new Date().toISOString().slice(0, 10)}`
+              : `Offline Video Template ${new Date().toISOString().slice(0, 10)}`;
+          const meeting = await createMeeting(title, visitModality);
+          return { ok: true, meetingId: meeting.id, visitModality };
+        } catch (err) {
+          if (err instanceof ApiClientError) {
+            return { ok: false, error: err.message, code: err.code };
+          }
+          throw err;
+        }
       }
 
       case 'save-note': {

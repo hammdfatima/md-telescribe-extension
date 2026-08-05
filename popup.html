@@ -139,8 +139,36 @@
         </button>
       </div>
 
+      <h3 class="visit-type-subheading">Or fill a blank template</h3>
+      <div id="offlineTemplateRow" class="visit-start-row visit-template-row">
+        <button id="offlineVideoTemplateBtn" type="button" class="btn btn-secondary visit-start-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <path d="M8 13h8"></path>
+            <path d="M8 17h6"></path>
+          </svg>
+          <span class="visit-start-label">
+            <strong>Offline video template</strong>
+            <small>Edit video note yourself</small>
+          </span>
+        </button>
+        <button id="offlineAudioTemplateBtn" type="button" class="btn btn-secondary visit-start-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <path d="M9 15h6"></path>
+            <path d="M9 11h6"></path>
+          </svg>
+          <span class="visit-start-label">
+            <strong>Audio template</strong>
+            <small>Edit audio note yourself</small>
+          </span>
+        </button>
+      </div>
+
       <p id="autoDetectHint" class="visit-type-help">
-        Use <strong>Video visit</strong> or <strong>Audio visit</strong> for telemedicine. Use <strong>In-person visit</strong> to record a face-to-face conversation with the microphone. Wear headphones for clearer doctor transcription on telemedicine visits.
+        Use <strong>Video visit</strong> or <strong>Audio visit</strong> for telemedicine. Use <strong>In-person visit</strong> to record a face-to-face conversation with the microphone. Or open an <strong>offline template</strong> to type the note yourself. Wear headphones for clearer doctor transcription on telemedicine visits.
       </p>
 
       <div id="recordingButtons" class="buttons recording-controls hidden">
@@ -204,11 +232,12 @@
     </section>
 
     <p class="footer-hint">
-      Pick <strong>Video</strong>, <strong>Audio</strong>, or <strong>In-person</strong>, then stop recording to generate clinical notes.
+      Record a visit, or open an <strong>offline template</strong> to fill clinical notes yourself.
     </p>
   </div>
 
   <script src="config.js"></script>
+  <script src="note-templates.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -8,6 +8,10 @@ const micMeterEl = document.getElementById('micMeter');
 const startVideoBtn = document.getElementById('startVideoBtn');
 const startAudioBtn = document.getElementById('startAudioBtn');
 const startInPersonBtn = document.getElementById('startInPersonBtn');
+const offlineVideoTemplateBtn = document.getElementById('offlineVideoTemplateBtn');
+const offlineAudioTemplateBtn = document.getElementById('offlineAudioTemplateBtn');
+const offlineTemplateRow = document.getElementById('offlineTemplateRow');
+const visitTypeSubheadingEl = document.querySelector('.visit-type-subheading');
 const pauseBtn = document.getElementById('pauseBtn');
 const pauseBtnLabel = document.getElementById('pauseBtnLabel');
 const pauseBtnIcon = document.getElementById('pauseBtnIcon');
@@ -156,6 +160,8 @@ function setVisitStartButtonsDisabled(disabled) {
   if (startVideoBtn) startVideoBtn.disabled = disabled;
   if (startAudioBtn) startAudioBtn.disabled = disabled;
   if (startInPersonBtn) startInPersonBtn.disabled = disabled;
+  if (offlineVideoTemplateBtn) offlineVideoTemplateBtn.disabled = disabled;
+  if (offlineAudioTemplateBtn) offlineAudioTemplateBtn.disabled = disabled;
 }
 
 function updateAuthUI() {
@@ -559,6 +565,8 @@ function setStatus(state, message) {
   const hideChooser = startDisabled && state !== 'idle';
   visitStartRow?.classList.toggle('hidden', hideChooser);
   visitTypeHeading?.classList.toggle('hidden', hideChooser);
+  offlineTemplateRow?.classList.toggle('hidden', hideChooser);
+  visitTypeSubheadingEl?.classList.toggle('hidden', hideChooser);
   autoDetectHintEl?.classList.toggle('hidden', hideChooser);
   recordingButtonsEl?.classList.toggle('hidden', !isActivelyRecording);
   stopBtn.disabled = !isActivelyRecording;
@@ -595,6 +603,8 @@ function updateSessionButtons() {
   const visitTypeHeading = document.getElementById('visitTypeHeading');
   visitStartRow?.classList.toggle('hidden', hasSession);
   visitTypeHeading?.classList.toggle('hidden', hasSession);
+  offlineTemplateRow?.classList.toggle('hidden', hasSession);
+  visitTypeSubheadingEl?.classList.toggle('hidden', hasSession);
   autoDetectHintEl?.classList.toggle('hidden', hasSession);
   sessionPanel.classList.toggle('visible', hasSession);
 
@@ -603,6 +613,12 @@ function updateSessionButtons() {
   notesConsentRow?.classList.toggle('hidden', !showConsent);
   if (!showConsent && notesConsentCheckbox) {
     notesConsentCheckbox.checked = false;
+  }
+  const consentTextEl = notesConsentRow?.querySelector('.consent-label span');
+  if (consentTextEl) {
+    consentTextEl.textContent = currentSession?.offlineTemplate
+      ? 'I confirm I have personally reviewed this progress note in its entirety for documentation accuracy. COPY & SAVE are available ONLY after I acknowledge & confirm this to be true.'
+      : 'I confirm the patient consented to the audio recording of this medical encounter/visit and I have personally reviewed the progress note in its entirety for documentation accuracy. COPY & SAVE are available ONLY after I acknowledge & confirm this to be true.';
   }
 
   saveNotesBtn.classList.toggle('hidden', !showSave);
@@ -1394,6 +1410,67 @@ async function startInPersonRecording() {
   }
 }
 
+/**
+ * Open a blank VIDEO/AUDIO encounter template in the note editor for manual fill-in.
+ * @param {'AUDIO' | 'VIDEO'} visitModality
+ */
+async function openOfflineTemplate(visitModality) {
+  if (typeof getOfflineNoteTemplate !== 'function') {
+    showError('Note templates failed to load. Reload the extension and try again.');
+    return;
+  }
+
+  if (!authSession?.user) {
+    showError('Sign in to open an offline note template.');
+    return;
+  }
+
+  showError('');
+  setVisitStartButtonsDisabled(true);
+  setStatus('starting', 'Opening note template…');
+
+  try {
+    const response = await sendToBackground('open-offline-template', { visitModality });
+    if (!response?.ok || !response.meetingId) {
+      throw new Error(response?.error || 'Could not create a meeting for this template.');
+    }
+
+    const content = getOfflineNoteTemplate(visitModality);
+    const session = {
+      meetingId: response.meetingId,
+      visitModality,
+      notesSaved: false,
+      processingNotes: false,
+      offlineTemplate: true,
+      note: {
+        title:
+          visitModality === 'AUDIO'
+            ? 'Telemedicine Audio Encounter Note'
+            : 'Telemedicine Video Encounter Note',
+        summary: 'Blank offline template — fill in clinical details, then save.',
+        content,
+      },
+      files: { hasAudio: false, hasText: false },
+    };
+
+    await chrome.storage.local.set({
+      pendingSession: session,
+      syncError: null,
+      processing: false,
+      processingStage: null,
+    });
+    showSession(session);
+    setStatus('notes', 'Fill in the note template, then save.');
+    notesContentEl?.focus();
+  } catch (err) {
+    console.error('[popup] openOfflineTemplate failed:', err);
+    showError(err instanceof Error ? err.message : String(err));
+    setStatus('idle', 'Ready to record');
+  } finally {
+    setVisitStartButtonsDisabled(false);
+  }
+}
+
 async function consumeMeetingAutostart() {
   // Meeting prompt only opens the extension now. Visit type is chosen here.
   const params = new URLSearchParams(window.location.search);
@@ -1554,7 +1631,11 @@ async function saveNotes() {
   }
 
   if (!notesConsentCheckbox?.checked) {
-    showError('Please confirm patient recording consent and note review before saving.');
+    showError(
+      currentSession?.offlineTemplate
+        ? 'Please confirm you reviewed the note before saving.'
+        : 'Please confirm patient recording consent and note review before saving.',
+    );
     return;
   }
 
@@ -1798,6 +1879,8 @@ chrome.runtime.onMessage.addListener((message) => {
 startVideoBtn?.addEventListener('click', () => startRecording('VIDEO'));
 startAudioBtn?.addEventListener('click', () => startRecording('AUDIO'));
 startInPersonBtn?.addEventListener('click', () => startInPersonRecording());
+offlineVideoTemplateBtn?.addEventListener('click', () => openOfflineTemplate('VIDEO'));
+offlineAudioTemplateBtn?.addEventListener('click', () => openOfflineTemplate('AUDIO'));
 notesContentEl?.addEventListener('copy', blockUnverifiedNotesClipboard);
 notesContentEl?.addEventListener('cut', blockUnverifiedNotesClipboard);
 notesDisplayEl?.addEventListener('copy', blockUnverifiedNotesClipboard);

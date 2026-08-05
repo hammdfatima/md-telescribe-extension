@@ -249,6 +249,18 @@ body {
   letter-spacing: -0.01em;
 }
 
+.visit-type-subheading {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground, #6b7280);
+  letter-spacing: -0.01em;
+}
+
+.visit-template-row {
+  margin-bottom: 0;
+}
+
 .visit-type-help {
   margin: 12px 0 14px;
   padding: 0;

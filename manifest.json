@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "md telescribe",
-  "version": "1.6.9",
+  "version": "1.7.0",
   "description": "Record telemedicine or in-person visits and generate AI-powered SOAP notes with md telescribe.",
   "permissions": [
     "tabCapture",

@@ -48,7 +48,7 @@ let liveChunkStream = null;
 let liveChunkSeq = 0;
 
 /** Seconds of audio per live Whisper request (shorter = faster notes after stop). */
-const LIVE_CHUNK_MS = 12_000;
+const LIVE_CHUNK_MS = 10_000;
 
 /** @type {Blob[]} */
 let recordedChunks = [];

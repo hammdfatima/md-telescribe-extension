@@ -388,14 +388,12 @@ function isTransientNetworkError(err) {
   const status = err instanceof ApiClientError ? err.status : undefined;
   return (
     err.name === 'AbortError' ||
-    status === 500 ||
     status === 502 ||
     status === 503 ||
     status === 504 ||
     message.includes('Could not reach the server') ||
     message.includes('Failed to fetch') ||
     message.includes('NetworkError') ||
-    message.includes('API request failed (500)') ||
     message.includes('API request failed (502)') ||
     message.includes('API request failed (503)') ||
     message.includes('API request failed (504)')
@@ -455,21 +453,19 @@ async function generateMeetingNotes(meetingId, visitModality) {
   let generateError = null;
   let generateSettled = false;
   let generateAttempts = 0;
-  let lastKickAt = 0;
   const generateBody = visitModality ? { visitModality } : {};
 
   // Server returns quickly and runs Whisper/GPT in the background.
   // Keep this kick timeout short so proxies don't kill a long-held connection.
   const kickGenerate = () => {
     generateAttempts += 1;
-    lastKickAt = Date.now();
     generateSettled = false;
     generateError = null;
     void apiRequest(`/meetings/${meetingId}/notes/generate`, {
       method: 'POST',
       body: JSON.stringify(generateBody),
       timeoutMs: 60_000,
-      retries: 2,
+      retries: 1,
     })
       .catch((err) => {
         generateError = err;
@@ -494,17 +490,14 @@ async function generateMeetingNotes(meetingId, visitModality) {
       generateError = err;
     }
 
-    // Retry kick on DB blips / 5xx, and periodically re-kick while still waiting.
-    const shouldRetryTransient =
+    // Retry kick if the start request failed transiently (502 / network blip).
+    if (
       generateSettled &&
       generateError &&
       isTransientNetworkError(generateError) &&
-      generateAttempts < 8;
-    const shouldRekickIdle =
-      generateSettled && !generateError && Date.now() - lastKickAt > 12_000 && generateAttempts < 8;
-
-    if (shouldRetryTransient || shouldRekickIdle) {
-      await new Promise((resolve) => setTimeout(resolve, shouldRetryTransient ? 2000 : 500));
+      generateAttempts < 4
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       kickGenerate();
       continue;
     }
@@ -513,7 +506,7 @@ async function generateMeetingNotes(meetingId, visitModality) {
       throw generateError;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await new Promise((resolve) => setTimeout(resolve, 2500));
   }
 
   if (generateError && !isTransientNetworkError(generateError)) {

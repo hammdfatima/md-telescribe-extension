@@ -407,8 +407,17 @@ function renderNotesDisplay(content) {
   notesDisplayEl.innerHTML = formatNotesHtml(content);
 }
 
+function isOfflineTemplateSession() {
+  return Boolean(currentSession?.offlineTemplate);
+}
+
+/** Offline blank templates skip recording-consent; recorded visits still require it. */
+function notesConsentSatisfied() {
+  return isOfflineTemplateSession() || Boolean(notesConsentCheckbox?.checked);
+}
+
 async function copyNotesToClipboard() {
-  if (!notesConsentCheckbox?.checked) {
+  if (!notesConsentSatisfied()) {
     showError('Please confirm patient recording consent and note review before copying.');
     return;
   }
@@ -446,13 +455,12 @@ function updateCopyNotesEnabled() {
       ''
     ).trim(),
   );
-  const consented = Boolean(notesConsentCheckbox?.checked);
   const isVisible = !copyNotesBtn.classList.contains('hidden');
-  copyNotesBtn.disabled = !isVisible || !hasContent || !consented;
+  copyNotesBtn.disabled = !isVisible || !hasContent || !notesConsentSatisfied();
 }
 
 function blockUnverifiedNotesClipboard(event) {
-  if (notesConsentCheckbox?.checked) {
+  if (notesConsentSatisfied()) {
     return;
   }
   event.preventDefault();
@@ -580,9 +588,8 @@ function updateSaveNotesEnabled() {
   const notesSaved = Boolean(currentSession?.notesSaved);
   const processingNotes = Boolean(currentSession?.processingNotes);
   const canSave = hasNote && !notesSaved && !processingNotes;
-  const consented = Boolean(notesConsentCheckbox?.checked);
 
-  saveNotesBtn.disabled = !canSave || !consented;
+  saveNotesBtn.disabled = !canSave || !notesConsentSatisfied();
   updateCopyNotesEnabled();
 }
 
@@ -608,17 +615,11 @@ function updateSessionButtons() {
   autoDetectHintEl?.classList.toggle('hidden', hasSession);
   sessionPanel.classList.toggle('visible', hasSession);
 
-  // Keep consent visible whenever notes exist so copy cannot bypass verification.
-  const showConsent = hasNote && !processingNotes;
+  // Consent is only for recorded visits — offline blank templates can copy/save freely.
+  const showConsent = hasNote && !processingNotes && !isOfflineTemplateSession();
   notesConsentRow?.classList.toggle('hidden', !showConsent);
   if (!showConsent && notesConsentCheckbox) {
     notesConsentCheckbox.checked = false;
-  }
-  const consentTextEl = notesConsentRow?.querySelector('.consent-label span');
-  if (consentTextEl) {
-    consentTextEl.textContent = currentSession?.offlineTemplate
-      ? 'I confirm I have personally reviewed this progress note in its entirety for documentation accuracy. COPY & SAVE are available ONLY after I acknowledge & confirm this to be true.'
-      : 'I confirm the patient consented to the audio recording of this medical encounter/visit and I have personally reviewed the progress note in its entirety for documentation accuracy. COPY & SAVE are available ONLY after I acknowledge & confirm this to be true.';
   }
 
   saveNotesBtn.classList.toggle('hidden', !showSave);
@@ -1630,12 +1631,8 @@ async function saveNotes() {
     return;
   }
 
-  if (!notesConsentCheckbox?.checked) {
-    showError(
-      currentSession?.offlineTemplate
-        ? 'Please confirm you reviewed the note before saving.'
-        : 'Please confirm patient recording consent and note review before saving.',
-    );
+  if (!notesConsentSatisfied()) {
+    showError('Please confirm patient recording consent and note review before saving.');
     return;
   }
 

@@ -709,7 +709,6 @@ async function runProcessStoppedRecording(payload) {
     // Let the final live Whisper chunk(s) finish before kicking note generation.
     await flushPendingLiveTranscripts();
 
-    // Start notes ASAP — do not block on large audio uploads (OneDrive/upload can fail).
     await setProcessingStage('generating');
     notifyPopup('sync-status', { stage: 'generating' });
 
@@ -719,9 +718,7 @@ async function runProcessStoppedRecording(payload) {
       console.warn('[background] completeMeeting failed (will still generate):', err);
     }
 
-    const generatePromise = generateMeetingNotes(meetingId, visitModality);
-
-    void (async () => {
+    const uploadAudioPromise = (async () => {
       try {
         await uploadMeetingAudio(meetingId, payload.audioBuffer, 'mixed');
         console.log('[background] uploaded audio bytes:', payload.audioBuffer.byteLength);
@@ -742,6 +739,30 @@ async function runProcessStoppedRecording(payload) {
         });
       }
     })();
+
+    // If live ASR already captured the visit, draft notes immediately from that
+    // full conversation. Only wait on audio upload when we still need Whisper.
+    let hasLiveTranscript = false;
+    try {
+      const meetingSnapshot = await getMeeting(meetingId);
+      const segments = meetingSnapshot?.segments ?? meetingSnapshot?.transcriptSegments ?? [];
+      const joined = Array.isArray(segments)
+        ? segments.map((s) => (s?.text || '').trim()).filter(Boolean).join(' ')
+        : '';
+      hasLiveTranscript = joined.length >= 80;
+    } catch (err) {
+      console.warn('[background] could not check live transcript before generate:', err);
+    }
+
+    if (!hasLiveTranscript) {
+      notifyPopup('sync-status', { stage: 'uploading' });
+      await uploadAudioPromise;
+      notifyPopup('sync-status', { stage: 'generating' });
+    } else {
+      void uploadAudioPromise;
+    }
+
+    const generatePromise = generateMeetingNotes(meetingId, visitModality);
 
     const generated = await generatePromise;
     note = generated.note;

@@ -400,7 +400,7 @@ function setNotesGeneratingDetail(stage) {
     return;
   }
   notesGeneratingDetailEl.textContent =
-    'Transcribing your visit and drafting the SOAP note. Keep this popup open.';
+    'Drafting your full clinical note from the visit conversation. Keep this popup open.';
 }
 
 function renderNotesDisplay(content) {
